@@ -20,12 +20,12 @@ import warnings
 import mock
 import pytest
 
-from horovod.run.util import network
-from horovod.run.elastic.discovery import FixedHosts, HostManager
-from horovod.run.elastic.driver import ElasticDriver
-from horovod.run.elastic.rendezvous import create_rendezvous_handler
-from horovod.run.elastic.worker import WorkerNotificationManager
-from horovod.run.http.http_server import RendezvousServer
+from horovod.runner.util import network
+from horovod.runner.elastic.discovery import FixedHosts, HostManager
+from horovod.runner.elastic.driver import ElasticDriver
+from horovod.runner.elastic.rendezvous import create_rendezvous_handler
+from horovod.runner.elastic.worker import WorkerNotificationManager
+from horovod.runner.http.http_server import RendezvousServer
 
 
 def wait_for_one(events):
@@ -69,7 +69,7 @@ class ElasticDriverTests(unittest.TestCase):
             return 0, time.time()
 
         driver.start(np=2, create_worker_fn=exec_command)
-        res = driver.get_results()
+        res = driver.get_results().worker_results
         driver.stop()
 
         assert len(res) == 4
@@ -100,7 +100,7 @@ class ElasticDriverTests(unittest.TestCase):
             return 0, time.time()
 
         driver.start(np=2, create_worker_fn=exec_command)
-        res = driver.get_results()
+        res = driver.get_results().worker_results
         driver.stop()
 
         assert len(res) == 2
@@ -116,7 +116,7 @@ class ElasticDriverTests(unittest.TestCase):
             assert updated_slot_info.cross_size == 1, rank
             assert updated_slot_info.cross_rank == 0, rank
 
-    @mock.patch('horovod.run.elastic.driver.DISCOVER_HOSTS_FREQUENCY_SECS', 0.01)
+    @mock.patch('horovod.runner.elastic.driver.DISCOVER_HOSTS_FREQUENCY_SECS', 0.01)
     def test_rank_and_size_with_host_added(self):
         """Tests training starts with one host two slots, then a second host is added."""
         slots = {'host-1': 2}
@@ -146,7 +146,7 @@ class ElasticDriverTests(unittest.TestCase):
             return 0, time.time()
 
         driver.start(np=2, create_worker_fn=exec_command)
-        res = driver.get_results()
+        res = driver.get_results().worker_results
         driver.stop()
 
         assert len(res) == 4
@@ -162,9 +162,9 @@ class ElasticDriverTests(unittest.TestCase):
             assert updated_slot_info.cross_size == 2, rank
             assert updated_slot_info.cross_rank == slot_info.cross_rank, rank
 
-    @mock.patch('horovod.run.elastic.driver.DISCOVER_HOSTS_FREQUENCY_SECS', 0.01)
-    @mock.patch('horovod.run.elastic.driver.ElasticDriver.get_coordinator_info')
-    @mock.patch('horovod.run.elastic.driver.ElasticDriver.get_worker_client')
+    @mock.patch('horovod.runner.elastic.driver.DISCOVER_HOSTS_FREQUENCY_SECS', 0.01)
+    @mock.patch('horovod.runner.elastic.driver.ElasticDriver.get_coordinator_info')
+    @mock.patch('horovod.runner.elastic.driver.ElasticDriver.get_worker_client')
     def test_wait_for_available_slots(self, mock_get_worker_client, mock_get_coordinator_info):
         """Tests that driver blocks until the min number of slots are available."""
         slots = [{'host-1': 4},
@@ -183,7 +183,7 @@ class ElasticDriverTests(unittest.TestCase):
         assert mock_get_worker_client.call_count == 2
         assert mock_get_coordinator_info.call_count == 2
 
-    @mock.patch('horovod.run.elastic.driver.DISCOVER_HOSTS_FREQUENCY_SECS', 0.01)
+    @mock.patch('horovod.runner.elastic.driver.DISCOVER_HOSTS_FREQUENCY_SECS', 0.01)
     def test_wait_for_min_hosts(self):
         """Tests that driver blocks until the min number of hosts and slots are available."""
         slots = [{'host-1': 4},
@@ -212,7 +212,7 @@ class ElasticDriverTests(unittest.TestCase):
             return 1, time.time()
 
         driver.start(np=2, create_worker_fn=exec_command)
-        res = driver.get_results()
+        res = driver.get_results().worker_results
         driver.stop()
 
         assert len(res) == 4
@@ -236,7 +236,7 @@ class ElasticDriverTests(unittest.TestCase):
             return 1, time.time()
 
         driver.start(np=2, create_worker_fn=exec_command)
-        res = driver.get_results()
+        res = driver.get_results().worker_results
         driver.stop()
 
         assert len(res) == 4
@@ -271,7 +271,7 @@ class ElasticDriverTests(unittest.TestCase):
             return 0, time.time()
 
         driver.start(np=2, create_worker_fn=exec_command)
-        res = driver.get_results()
+        res = driver.get_results().worker_results
         driver.stop()
 
         assert len(res) == 2
@@ -287,7 +287,7 @@ class ElasticDriverTests(unittest.TestCase):
             assert updated_slot_info.cross_size == 1, rank
             assert updated_slot_info.cross_rank == 0, rank
 
-    @mock.patch('horovod.run.elastic.driver.DISCOVER_HOSTS_FREQUENCY_SECS', 0.01)
+    @mock.patch('horovod.runner.elastic.driver.DISCOVER_HOSTS_FREQUENCY_SECS', 0.01)
     def test_worker_notification_manager(self):
         """Tests that host add events are sent to the worker notification service and consumed."""
         slots = {'host-1': 2}
@@ -300,7 +300,7 @@ class ElasticDriverTests(unittest.TestCase):
 
         common_intfs = network.get_local_intfs()
         addr = network.get_driver_ip(common_intfs)
-        port = rendezvous.start_server(handler)
+        port = rendezvous.start(handler)
         nic = list(common_intfs)[0]
 
         rank_results = {}
@@ -348,7 +348,7 @@ class ElasticDriverTests(unittest.TestCase):
             return 0, time.time()
 
         driver.start(np=2, create_worker_fn=exec_command)
-        res = driver.get_results()
+        res = driver.get_results().worker_results
         driver.stop()
 
         assert len(res) == 2
@@ -360,12 +360,12 @@ class ElasticDriverTests(unittest.TestCase):
             expected = 2 if rank == 0 else 0
             assert len(timestamps) == expected, rank
 
-        rendezvous.stop_server()
+        rendezvous.stop()
 
-    @mock.patch('horovod.run.elastic.driver.DISCOVER_HOSTS_FREQUENCY_SECS', 0.01)
-    @mock.patch('horovod.run.elastic.driver.ElasticDriver.host_assignments')
-    @mock.patch('horovod.run.elastic.driver.ElasticDriver.get_coordinator_info')
-    @mock.patch('horovod.run.elastic.driver.ElasticDriver.get_worker_client')
+    @mock.patch('horovod.runner.elastic.driver.DISCOVER_HOSTS_FREQUENCY_SECS', 0.01)
+    @mock.patch('horovod.runner.elastic.driver.ElasticDriver.host_assignments')
+    @mock.patch('horovod.runner.elastic.driver.ElasticDriver.get_coordinator_info')
+    @mock.patch('horovod.runner.elastic.driver.ElasticDriver.get_worker_client')
     def test_send_notifications_without_assignments(self, mock_get_worker_client, mock_get_coordinator_info,
                                                     mock_host_assignments):
         """Tests that notifications are still sent correctly even if host assignments cannot be generated."""

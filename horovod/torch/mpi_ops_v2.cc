@@ -16,6 +16,7 @@
 
 #include <chrono>
 #include <memory>
+#include <pthread.h>
 #include <thread>
 #include <torch/extension.h>
 #include <torch/torch.h>
@@ -50,6 +51,16 @@ int GetDeviceID(const ::torch::Tensor& tensor) {
 
 } // namespace
 
+void DivideInPlace(::torch::Tensor& tensor, int divisor) {
+#if TORCH_VERSION >= 1005000000
+  if (isIntegralType(tensor.scalar_type())) {
+    tensor.floor_divide_(divisor);
+    return;
+  }
+#endif
+  tensor.div_(divisor);
+}
+
 int DoAllreduce(::torch::Tensor tensor, ::torch::Tensor output, int divisor,
                 const std::string& name, int reduce_op_int) {
   ThrowIfError(common::CheckInitialized());
@@ -69,7 +80,7 @@ int DoAllreduce(::torch::Tensor tensor, ::torch::Tensor output, int divisor,
       [handle, divisor, output](const Status& status) mutable {
         // Will execute in the `device` context.
         if (divisor > 1) {
-          output.div_(divisor);
+          DivideInPlace(output, divisor);
         }
         handle_manager.MarkDone(handle, status);
       }, reduce_op);
@@ -104,7 +115,7 @@ int DoAllreduceCudaOnCPU(::torch::Tensor tensor, ::torch::Tensor output, int div
         with_device device_guard(device);
         output.copy_(cpu_buffer);
         if (divisor > 1) {
-          output.div_(divisor);
+          DivideInPlace(output, divisor);
         }
         handle_manager.MarkDone(handle, status);
       }, reduce_op);
@@ -230,8 +241,9 @@ int DoBroadcastCudaOnCPU(::torch::Tensor tensor, ::torch::Tensor output, int roo
 int PollHandle(int handle) { return handle_manager.PollHandle(handle) ? 1 : 0; }
 
 void WaitAndClear(int handle) {
-  while (!handle_manager.PollHandle(handle)) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  while (true) {
+    if (handle_manager.PollHandle(handle)) break;
+    pthread_yield();
   }
   auto status = handle_manager.ReleaseHandle(handle);
   ThrowIfError(*status);

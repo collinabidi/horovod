@@ -22,9 +22,8 @@ from distutils.version import LooseVersion
 import itertools
 import numpy as np
 import os
-import pytest
 import tensorflow as tf
-from horovod.tensorflow.util import _executing_eagerly, _has_eager
+from horovod.tensorflow.util import _executing_eagerly
 from tensorflow.python.framework import ops
 import warnings
 
@@ -42,10 +41,9 @@ if hasattr(tf, 'config') and hasattr(tf.config, 'experimental') \
     for gpu in gpus:
         tf.config.experimental.set_memory_growth(gpu, True)
 else:
-    if _has_eager:
-        # Specifies the config to use with eager execution. Does not preclude
-        # tests from running in the graph mode.
-        tf.enable_eager_execution(config=config)
+    # Specifies the config to use with eager execution. Does not preclude
+    # tests from running in the graph mode.
+    tf.enable_eager_execution(config=config)
 
 ccl_supported_types = set([tf.uint8, tf.int32, tf.int64, tf.float32, tf.float64])
 
@@ -60,11 +58,10 @@ class TensorFlowTests(tf.test.TestCase):
     def __init__(self, *args, **kwargs):
         super(TensorFlowTests, self).__init__(*args, **kwargs)
         warnings.simplefilter('module')
-        if _has_eager:
-            if hasattr(tf, 'contrib') and hasattr(tf.contrib, 'eager'):
-                self.tfe = tf.contrib.eager
-            else:
-                self.tfe = tf
+        if hasattr(tf, 'contrib') and hasattr(tf.contrib, 'eager'):
+            self.tfe = tf.contrib.eager
+        else:
+            self.tfe = tf
 
     def evaluate(self, tensors):
         if _executing_eagerly():
@@ -133,6 +130,34 @@ class TensorFlowTests(tf.test.TestCase):
             assert mpi_size == size
         else:
             assert gloo_size == size
+
+    def test_horovod_rank_op(self):
+        """Test that the rank returned by hvd.rank_op() is correct."""
+        hvd.init()
+        rank = self.evaluate(hvd.rank_op())
+        self.assertTrue(rank == hvd.rank(),
+                        "hvd.rank_op produces incorrect results")
+
+    def test_horovod_local_rank_op(self):
+        """Test that the local rank returned by hvd.local_rank_op() is correct."""
+        hvd.init()
+        local_rank = self.evaluate(hvd.local_rank_op())
+        self.assertTrue(local_rank == hvd.local_rank(),
+                        "hvd.local_rank_op produces incorrect results")
+
+    def test_horovod_size_op(self):
+        """Test that the size returned by hvd.size_op() is correct."""
+        hvd.init()
+        size = self.evaluate(hvd.size_op())
+        self.assertTrue(size == hvd.size(),
+                        "hvd.size_op produces incorrect results")
+
+    def test_horovod_local_size_op(self):
+        """Test that the local size returned by hvd.local_size_op() is correct."""
+        hvd.init()
+        local_size = self.evaluate(hvd.local_size_op())
+        self.assertTrue(local_size == hvd.local_size(),
+                        "hvd.local_size_op produces incorrect results")
 
     def test_horovod_allreduce_cpu(self):
         """Test on CPU that the allreduce correctly sums 1D, 2D, 3D tensors."""
@@ -1288,11 +1313,148 @@ class TensorFlowTests(tf.test.TestCase):
                 self.assertAllClose(w1, w2)
             assert state.batch == 21
             assert state.epoch == 11
+            
+    def test_horovod_join_allreduce(self):
+        """Test that the hvd.join with allreduce works on GPUs."""
+        # Only do this test if there are GPUs available.
+        if not tf.test.is_gpu_available(cuda_only=True):
+            self.skipTest(("No GPUs available"))
 
+        if os.environ.get('HOROVOD_MIXED_INSTALL'):
+            # Skip if compiled with CUDA but without HOROVOD_GPU_ALLREDUCE.
+            self.skipTest("Not compiled with HOROVOD_GPU_ALLREDUCE")
 
-if _has_eager:
-    from tensorflow.python.framework.test_util import run_all_in_graph_and_eager_modes
-    run_all_in_graph_and_eager_modes(TensorFlowTests)
+        hvd.init()
+        local_rank = hvd.local_rank()
+        size = hvd.size()
+
+        dtypes = [tf.int32, tf.int64, tf.float16, tf.float32, tf.float64]
+        dims = [1, 2, 3]
+        first_join_ranks = [0, 1]
+
+        for dtype, dim, first_join_rank in itertools.product(dtypes, dims, first_join_ranks):
+            with tf.device("/gpu:%d" % local_rank):
+                if local_rank == first_join_rank:
+                    self.evaluate(hvd.join())
+                else:		
+                    tensor = self.random_uniform(
+                            [17] * dim, -100, 100, dtype=dtype)
+                    summed = hvd.allreduce(tensor, average=False)
+                    multiplied = tensor * (size-1)
+                    max_difference = tf.reduce_max(tf.abs(summed - multiplied))
+
+                    if size <= 3 or dtype in [tf.int32, tf.int64]:
+                        threshold = 0 
+                    elif size < 10:
+                        threshold = 1e-4
+                    elif size < 15:
+                        threshold = 5e-4
+                    else:
+                        return
+                    diff = self.evaluate(max_difference)
+                    self.evaluate(hvd.join())
+                    self.assertTrue(diff <= threshold,
+                             "hvd.join with hvd.allreduce on GPU produces incorrect results")
+
+    def test_horovod_syncbn_gpu(self):
+        """Test that the SyncBatchNormalization implementation is correct on GPU."""
+        # Only do this test if there are GPUs available.
+        if not tf.test.is_gpu_available(cuda_only=True):
+            self.skipTest(("No GPUs available"))
+
+        hvd.init()
+        with tf.device("/gpu:%d" % hvd.local_rank()):
+            x_list = [
+                tf.convert_to_tensor(np.stack([
+                    np.array([
+                        [r, r + 1],
+                        [r * 2, r * 2 + 1],
+                        [r * 3, r * 3 + 1],
+                        [r * 4, r * 4 + 1]
+                    ], dtype=np.float32)
+                    for r in range(hvd.size())
+                ]), np.float32),
+                tf.convert_to_tensor(np.stack([
+                    np.array([
+                        [r + 1],
+                        [r * 2 + 1],
+                        [r * 3 + 1],
+                        [r * 4 + 1]
+                    ], dtype=np.float32)
+                    for r in range(hvd.size())
+                ]), np.float32),
+            ]
+
+            for x in x_list:
+                try:
+                    bn = tf.layers.BatchNormalization(axis=1)
+                except AttributeError:
+                    bn = tf.compat.v1.layers.BatchNormalization(axis=1)
+                sync_bn = hvd.SyncBatchNormalization(axis=1)
+                bn_func = bn.apply(x, training=True)
+                sync_bn_func = sync_bn.apply(tf.expand_dims(x[hvd.rank()], 0), training=True)
+
+                try:
+                  init = tf.global_variables_initializer()
+                except AttributeError:
+                  init = tf.compat.v1.global_variables_initializer()
+                self.evaluate(init)
+                bn_out = self.evaluate(bn_func)
+                sync_bn_out = self.evaluate(sync_bn_func)
+
+                self.assertAllClose(sync_bn_out, np.expand_dims(bn_out[hvd.rank()], 0))
+                self.assertAllClose(self.evaluate(sync_bn.moving_mean), self.evaluate(bn.moving_mean))
+                self.assertAllClose(self.evaluate(sync_bn.moving_variance), self.evaluate(bn.moving_variance))
+
+    def test_horovod_syncbn_cpu(self):
+        """Test that the SyncBatchNormalization implementation is correct on CPU."""
+
+        hvd.init()
+        with tf.device("/cpu:0"):
+            x_list = [
+                tf.convert_to_tensor(np.stack([
+                    np.array([
+                        [r, r + 1],
+                        [r * 2, r * 2 + 1],
+                        [r * 3, r * 3 + 1],
+                        [r * 4, r * 4 + 1]
+                    ], dtype=np.float32)
+                    for r in range(hvd.size())
+                ]), np.float32),
+                tf.convert_to_tensor(np.stack([
+                    np.array([
+                        [r + 1],
+                        [r * 2 + 1],
+                        [r * 3 + 1],
+                        [r * 4 + 1]
+                    ], dtype=np.float32)
+                    for r in range(hvd.size())
+                ]), np.float32),
+            ]
+
+            for x in x_list:
+                try:
+                    bn = tf.layers.BatchNormalization(axis=1)
+                except AttributeError:
+                    bn = tf.compat.v1.layers.BatchNormalization(axis=1)
+                sync_bn = hvd.SyncBatchNormalization(axis=1)
+                bn_func = bn.apply(x, training=True)
+                sync_bn_func = sync_bn.apply(tf.expand_dims(x[hvd.rank()], 0), training=True)
+
+                try:
+                  init = tf.global_variables_initializer()
+                except AttributeError:
+                  init = tf.compat.v1.global_variables_initializer()
+                self.evaluate(init)
+                bn_out = self.evaluate(bn_func)
+                sync_bn_out = self.evaluate(sync_bn_func)
+
+                self.assertAllClose(sync_bn_out, np.expand_dims(bn_out[hvd.rank()], 0))
+                self.assertAllClose(self.evaluate(sync_bn.moving_mean), self.evaluate(bn.moving_mean))
+                self.assertAllClose(self.evaluate(sync_bn.moving_variance), self.evaluate(bn.moving_variance))
+
+from tensorflow.python.framework.test_util import run_all_in_graph_and_eager_modes
+run_all_in_graph_and_eager_modes(TensorFlowTests)
 
 if __name__ == '__main__':
     tf.test.main()

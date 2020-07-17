@@ -18,6 +18,8 @@ import horovod.spark.common._namedtuple_fix
 import numbers
 import time
 
+from distutils.version import LooseVersion
+
 import numpy as np
 import tensorflow as tf
 
@@ -25,7 +27,7 @@ from pyspark import keyword_only
 from pyspark.ml.util import MLWritable, MLReadable
 from pyspark.ml.param.shared import Param, Params
 
-from horovod.run.common.util import codec
+from horovod.runner.common.util import codec
 
 from horovod.spark.common import util
 from horovod.spark.common.estimator import HorovodEstimator, HorovodModel
