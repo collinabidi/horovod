@@ -19,21 +19,22 @@
 
 #include <iostream>
 
-#include "mpi.h"
+#include "shmem.h"
 
 #include "collective_operations.h"
 #include "../common.h"
 #include "../global_state.h"
-#include "../mpi/mpi_context.h"
+#include "../shmem/shmem_context.h"
 
 namespace horovod {
 namespace common {
 
-class MPIAllreduce : public AllreduceOp {
+// AllreduceOp parameters: 
+class SHMEMAllreduce : public AllreduceOp {
 public:
-  MPIAllreduce(MPIContext* mpi_context, HorovodGlobalState* global_state);
+  SHMEMAllreduce(MPIContext* mpi_context, HorovodGlobalState* global_state);
 
-  virtual ~MPIAllreduce() = default;
+  virtual ~SHMEMAllreduce() = default;
 
   Status Execute(std::vector<TensorTableEntry>& entries, const Response& response) override;
 

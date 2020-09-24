@@ -1,4 +1,5 @@
-// Copyright 2019 Uber Technologies, Inc. All Rights Reserved.
+// Copyright 2016 The TensorFlow Authors. All Rights Reserved.
+// Modifications copyright (C) 2019 Uber Technologies, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,48 +17,67 @@
 #ifndef HOROVOD_SHMEM_CONTEXT_H
 #define HOROVOD_SHMEM_CONTEXT_H
 
-#include "shmem/context.h"
+#include <iostream>
+#include <memory>
+#include <vector>
 
 #include "../common.h"
+#include "../half.h"
 #include "../logging.h"
 
-#if HAVE_MPI
-#include "../mpi/mpi_context.h"
-#endif
+#include "shmem.h"
 
 namespace horovod {
 namespace common {
 
-struct ShmemContext {
+// Base class for managing SHMEM environment.
+class SHMEMContextManager {
+public:
+  // Initialize SHMEM environment
+  virtual void EnvInitialize();
 
-#if HAVE_MPI
-  void InitializeFromMPI(MPIContext& mpi_ctx, const std::string& shmem_iface);
-#endif
+  // Finalize SHMEM environment.
+  virtual void EnvFinalize();
+};
 
-  void Initialize(const std::string& gloo_iface);
-
-  void Finalize();
-
-  std::shared_ptr<gloo::Context> GetGlooContext(Communicator communicator);
+struct SHMEMContext {
 
   void Enable() {
     enabled_ = true;
-    LOG(DEBUG) << "Gloo context enabled.";
-  }
+    LOG(DEBUG) << "SHMEM context enabled.";
+  };
 
   bool IsEnabled() { return enabled_; }
 
-  std::shared_ptr<gloo::Context> ctx = nullptr; // Global context
-  std::shared_ptr<gloo::Context> cross_ctx = nullptr;
-  std::shared_ptr<gloo::Context> local_ctx = nullptr;
+  // Take an argument of context manager pointer that will take care of
+  // initialization of SHMEM environment.
+  void Initialize();
 
-private:
-  // Flag indicating whether gloo is enabled.
+  // Take an argument of context manager pointer that will take care of
+  // finalization of SHMEM environment.
+  void Finalize(SHMEMContextManager& ctx_manager);
+  SHMEM_Datatype GetSHMEMDataType(std::shared_ptr<Tensor> tensor);
+
+  SHMEM_Datatype GetSHMEMDataType(DataType dtype);
+
+  SHMEM_Op GetSHMEMSumOp(DataType dtype);
+
+  SHMEM_Comm GetSHMEMCommunicator(Communicator comm);
+
+  int GetSHMEMTypeSize(DataType dtype);
+
+  // Flag indicating whether shmem is enabled.
   bool enabled_ = false;
-  bool reset_ = false;
+
+  // Custom SHMEM synchronization variables
+  int pWrk_int[SHMEM_REDUCE_SYNC_SIZE];
+  float pWrk_float[SHMEM_REDUCE_SYNC_SIZE];
+  double pWrk_double[SHMEM_REDUCE_SYNC_SIZE];
+  long pSync[SHMEM_BCAST_SYNC_SIZE];
+
 };
 
 } // namespace common
 } // namespace horovod
 
-#endif // HOROVOD_GLOO_CONTEXT_H
+#endif // HOROVOD_MPI_CONTEXT_H
