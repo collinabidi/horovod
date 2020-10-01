@@ -14,12 +14,32 @@
 // limitations under the License.
 // =============================================================================
 
-#include "mpi_operations.h"
+#include "shmem_operations.h"
+#include <shmem.h>
 
 namespace horovod {
 namespace common {
 
-MPIAllreduce::MPIAllreduce(MPIContext* mpi_context, HorovodGlobalState* global_state)
+void SHMEMContext::Init() {
+  // Initialize pSync values before calling shmem_init
+  static long pSync[SHMEM_BCAST_SYNC_SIZE];
+  for (int i = 0; i < SHMEM_BCAST_SYNC_SIZE; i++)
+    pSync[i] = SHMEM_SYNC_VALUE;
+
+  LOG(DEBUG) << "Background thread start";
+
+  // Initialize SHMEM
+  shmem_init();
+}
+
+void SHMEMContext::Finalize() {
+  LOG(DEBUG) << "Background thread destroy";
+
+  // Finalize SHMEM
+  shmem_finalize();
+}
+
+SHMEMAllreduce::SHMEMAllreduce(MPIContext* mpi_context, HorovodGlobalState* global_state)
     : AllreduceOp(global_state), mpi_context_(mpi_context) {}
 
 Status MPIAllreduce::Execute(std::vector<TensorTableEntry>& entries, const Response& response) {
@@ -338,27 +358,44 @@ void MPIHierarchicalAllgather::Barrier() {
   }
 }
 
-MPIBroadcast::MPIBroadcast(MPIContext* mpi_context, HorovodGlobalState* global_state)
-    : BroadcastOp(global_state), mpi_context_(mpi_context) {}
+SHMEMBroadcast::SHMEMBroadcast(SHMEMContext* shmem_context, HorovodGlobalState* global_state)
+    : BroadcastOp(global_state), shmem_context_(shmem_context) {}
 
-Status MPIBroadcast::Execute(std::vector<TensorTableEntry>& entries, const Response& response) {
+Status SHMEMBroadcast::Execute(std::vector<TensorTableEntry>& entries, const Response& response) {
   assert(entries.size() == 1);
   auto e = entries[0];
 
-  // On root rank, MPI_Bcast sends data, on other ranks it receives data.
+  // On root rank, shmem_broadcast[32,64] sends data, on other ranks it receives data.
+  /*
   void* data_ptr;
   if (global_state_->controller->GetRank() == e.root_rank) {
     data_ptr = (void*) e.tensor->data();
   } else {
     data_ptr = (void*) e.output->data();
   }
+  */
+  int me = shmem_my_pe();
+  int npes = shmem_n_pes();
 
-  global_state_->timeline.ActivityStartAll(entries, MPI_BCAST);
+  // Dynamically allocate tensors in shared memory as symmetric variables.
+  // This is inefficient, since we'll have to do this every single time we call broadcast
+  // but it's good enough for now.
+  void* source_ptr = shmem_malloc()
+
+  if (global_state_->controller->GetRank() == e.root_rank) {
+    // shmalloc memory for source data
+
+  }
+
+  global_state_->timeline.ActivityStartAll(entries, SHMEM_BCAST);
+  /*
   int op = MPI_Bcast(data_ptr,
                      (int) e.tensor->shape().num_elements(),
                      mpi_context_->GetMPIDataType(e.tensor->dtype()),
                      e.root_rank,
                      mpi_context_->GetMPICommunicator(Communicator::GLOBAL));
+  */
+  int op = shmem_broadcast32(dest, source, nelements, PE_root, PE_start, logPE_stride, PE_size, pSync);
   if (op != MPI_SUCCESS) {
     throw std::runtime_error("MPI_Broadcast failed, see MPI output for details.");
   }

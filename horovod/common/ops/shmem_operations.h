@@ -14,8 +14,8 @@
 // limitations under the License.
 // =============================================================================
 
-#ifndef HOROVOD_MPI_OPERATIONS_H
-#define HOROVOD_MPI_OPERATIONS_H
+#ifndef HOROVOD_SHMEM_OPERATIONS_H
+#define HOROVOD_SHMEM_OPERATIONS_H
 
 #include <iostream>
 
@@ -24,7 +24,7 @@
 #include "collective_operations.h"
 #include "../common.h"
 #include "../global_state.h"
-#include "../shmem/shmem_context.h"
+//#include "../shmem/shmem_context.h"
 
 namespace horovod {
 namespace common {
@@ -32,7 +32,7 @@ namespace common {
 // AllreduceOp parameters: 
 class SHMEMAllreduce : public AllreduceOp {
 public:
-  SHMEMAllreduce(MPIContext* mpi_context, HorovodGlobalState* global_state);
+  SHMEMAllreduce(SHMEMContext* shmem_context, HorovodGlobalState* global_state);
 
   virtual ~SHMEMAllreduce() = default;
 
@@ -43,26 +43,27 @@ public:
                const Response& response) const override;
 
 protected:
-  MPIContext* mpi_context_;
+  SHMEMContext* shmem_context_;
 };
 
-class MPIAllgather : public AllgatherOp {
+class SHMEMAllgather : public AllgatherOp {
 public:
-  MPIAllgather(MPIContext* mpi_context, HorovodGlobalState* global_state);
+  SHMEMAllgather(SHMEMContext* shmem_context, HorovodGlobalState* global_state);
 
-  Status Execute(std::vector<TensorTableEntry>& entries, const Response& response) override;
+  Status Execute(std::vector<TensorTableEntry>& entries,
+                 const Response& response) override;
 
   bool Enabled(const ParameterManager& param_manager,
                const std::vector<TensorTableEntry>& entries,
                const Response& response) const override;
 
 protected:
-  MPIContext* mpi_context_;
+  SHMEMContext* shmem_context_;
 };
 
-class MPIHierarchicalAllgather : public MPIAllgather {
+class SHMEMHierarchicalAllgather : public SHMEMAllgather {
 public:
-  MPIHierarchicalAllgather(MPIContext* mpi_context, HorovodGlobalState* global_state);
+  SHMEMHierarchicalAllgather(SHMEMContext* shmem_context, HorovodGlobalState* global_state);
 
   Status Execute(std::vector<TensorTableEntry>& entries, const Response& response) override;
 
@@ -74,21 +75,22 @@ private:
   void Barrier();
 };
 
-class MPIBroadcast : public BroadcastOp {
+class SHMEMBroadcast : public BroadcastOp {
 public:
-  MPIBroadcast(MPIContext* mpi_context, HorovodGlobalState* global_state);
+  SHMEMBroadcast(SHMEMContext* shmem_context, HorovodGlobalState* global_state);
 
-  Status Execute(std::vector<TensorTableEntry>& entries, const Response& response) override;
+  Status Execute(std::vector<TensorTableEntry>& entries, 
+                 const Response& response) override;
 
   bool Enabled(const ParameterManager& param_manager,
                const std::vector<TensorTableEntry>& entries,
                const Response& response) const override;
 
 protected:
-  MPIContext* mpi_context_;
+  SHMEMContext* shmem_context_;
 };
 
 } // namespace common
 } // namespace horovod
 
-#endif //HOROVOD_MPI_OPERATIONS_H
+#endif //HOROVOD_SHMEM_OPERATIONS_H

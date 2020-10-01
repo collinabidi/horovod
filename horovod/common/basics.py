@@ -213,3 +213,11 @@ class HorovodBasics(object):
           A boolean value indicating whether oneCCL support was compiled.
         """
         return bool(self.MPI_LIB_CTYPES.horovod_ccl_built())
+
+    def shmem_built(self):
+        """Returns True if Horovod was compiled with SHMEM support.
+
+        Returns:
+          A boolean value indicating whether SHMEM support was compiled.
+        """
+        return bool(self.MPI_LIB_CTYPES.horovod_shmem_built())

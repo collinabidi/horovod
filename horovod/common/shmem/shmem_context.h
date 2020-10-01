@@ -62,8 +62,6 @@ struct SHMEMContext {
 
   SHMEM_Op GetSHMEMSumOp(DataType dtype);
 
-  SHMEM_Comm GetSHMEMCommunicator(Communicator comm);
-
   int GetSHMEMTypeSize(DataType dtype);
 
   // Flag indicating whether shmem is enabled.
@@ -73,11 +71,11 @@ struct SHMEMContext {
   int pWrk_int[SHMEM_REDUCE_SYNC_SIZE];
   float pWrk_float[SHMEM_REDUCE_SYNC_SIZE];
   double pWrk_double[SHMEM_REDUCE_SYNC_SIZE];
-  long pSync[SHMEM_BCAST_SYNC_SIZE];
+  static long pSync[SHMEM_BCAST_SYNC_SIZE];
 
 };
 
 } // namespace common
 } // namespace horovod
 
-#endif // HOROVOD_MPI_CONTEXT_H
+#endif // HOROVOD_SHMEM_CONTEXT_H
