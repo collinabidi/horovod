@@ -48,6 +48,7 @@ Status SHMEMAllreduce::Execute(std::vector<TensorTableEntry>& entries, const Res
   auto& first_entry = entries[0];
 
   void* buffer_data;
+  void* symmetric_buffer_data;
   size_t buffer_len;
   int64_t num_elements = NumElements(entries);
 
@@ -57,29 +58,42 @@ Status SHMEMAllreduce::Execute(std::vector<TensorTableEntry>& entries, const Res
   auto& timeline = global_state_->timeline;
   int element_size = shmem_context_->GetSHMEMTypeSize(first_entry.tensor->dtype());
   buffer_len = (size_t)(num_elements) * element_size;
-  std::cout << "Calculated buffer_len: " << buffer_len << std::endl;
-  buffer_data = (void*) shmem_malloc(buffer_len);
-  timeline.ActivityStartAll(entries, SHMEMCPY_IN_FUSION_BUFFER);
-  const void* fused_input_data;
-  MemcpyInFusionBuffer(entries, fused_input_data, buffer_data, buffer_len);
-  timeline.ActivityEndAll(entries);
-  std::cout << "True buffer_len: " << buffer_len << std::endl;
+  std::cout << "SHMEM AllReduce: Calculated buffer_len = " << buffer_len << std::endl;
+  if (entries.size() > 1) {
+    std::cout << "SHMEM AllReduce: More than one entry" << std::endl;
+    timeline.ActivityStartAll(entries, MEMCPY_IN_FUSION_BUFFER);
+    const void* fused_input_data;
+    MemcpyInFusionBuffer(entries, fused_input_data, buffer_data, buffer_len);
+    timeline.ActivityEndAll(entries);
+  } else {
+    std::cout << "SHMEM AllReduce: Just one entry"
+    buffer_data = (void*) first_entry.output->data();
+    buffer_len = (size_t) first_entry.output->size();
+  }
+  std::cout << "SHMEM AllReduce: True buffer_len = " << buffer_len << std::endl;
+
+  symmetric_buffer_data = (void*) shmem_malloc(buffer_len);
+  memcpy(symmetric_buffer_data, buffer_data, buffer_len);
 
   // Do allreduce.
   timeline.ActivityStartAll(entries, SHMEM_ALLREDUCE);
-  const void* sendbuf = (void*) shmem_malloc(buffer_len);
-  memcpy(sendbuf, first_entry.tensor->data(), buffer_len);
-  first_entry.tensor->data();
+  const void* sendbuf = entries.size() > 1 || first_entry.tensor->data() == first_entry.output->data()
+                        ? buffer_data : first_entry.tensor->data();
+  const void* symmetric_sendbuf = (void*) shmem_malloc(buffer_len);
+  memcpy(symmetric_sendbuf, sendbuf, buffer_len);
   shmem_barrier_all();
   switch (shmem_context_->GetSHMEMDataType(e.tensor->dtype())) {
     case SHMEM_INT:
-      shmem_int_sum_to_all(buffer_data, sendbuf, (int)num_elements, 0, 0, world_size, pWrk_int, pSync);
+      shmem_int_sum_to_all(symmetric_buffer_data, symmetric_sendbuf, (int)num_elements, 0, 0, world_size, pWrk_int, pSync);
     case SHMEM_FLOAT:
-      shmem_float_sum_to_all(buffer_data, sendbuf, (int)num_elements, 0, 0, world_size, pWrk_float, pSync);
+      shmem_float_sum_to_all(symmetric_buffer_data, symmetric_sendbuf, (int)num_elements, 0, 0, world_size, pWrk_float, pSync);
     case SHMEM_DOUBLE:
-      shmem_double_sum_to_all(buffer_data, sendbuf, (int)num_elements, 0, 0, world_size, pWrk_double, pSync);
+      shmem_double_sum_to_all(symmetric_buffer_data, symmetric_sendbuf, (int)num_elements, 0, 0, world_size, pWrk_double, pSync);
   }
   timeline.ActivityEndAll(entries);
+
+  // Copy memory from symmetric back to the local variables
+  memcpy(symmetric_buffer_data, buffer_data, buffer_len);
 
   // Copy memory out of the fusion buffer.
   if (entries.size() > 1) {
@@ -89,8 +103,8 @@ Status SHMEMAllreduce::Execute(std::vector<TensorTableEntry>& entries, const Res
   }
 
   // Free symmetric variables
-  shmem_free(buffer_data);
-  shmem_free(sendbuf);
+  shmem_free(symmetric_buffer_data);
+  shmem_free(symmetric_sendbuf);
 
   return Status::OK();
 }
@@ -153,55 +167,62 @@ Status SHMEMAllgather::Execute(std::vector<TensorTableEntry>& entries, const Res
   int element_size = shmem_context_->GetSHMEMTypeSize(first_entry.tensor->dtype());
 
   const void* sendbuf = nullptr;
+  void* symmetric_sendbuf;
   void* buffer_data;
   void* symmetric_buffer_data;
-  void* symmetric_sendbuf;
   int64_t total_num_elements = NumElements(entries);
   int world_size = shmem_n_pes();
   int world_rank = shmem_my_pe();
   auto dtype = shmem_context_->GetSHMEMDataType(first_entry.tensor->dtype());
+  int64_t offset;
 
   if (entries.size() > 1) {
     // Copy memory to fusion buffer
     timeline.ActivityStartAll(entries, MEMCPY_IN_FUSION_BUFFER);
-    MemcpyInFusionBuffer(entries, displcmnts, element_size, buffer_data);
+    SHMEMMemcpyInFusionBuffer(entries, displcmnts, element_size, buffer_data, offset);
     timeline.ActivityEndAll(entries);
-    // Need to create sendbuf #@#@
-
   } else {
     // Create single-entry buffers
     sendbuf = first_entry.tensor->data();
     buffer_data = (void*) first_entry.output->data();
   }
 
-  // Copy memory to symmetric variables #@#@
-  int64_t offset = 0;
+  // Allocate symmetric variable with the calculated offset size and copy to it from buffer_data
+  int64_t buffer_len = offset - displcmnts[global_state_->controller->GetRank()] * element_size;
+  symmetric_buffer_data = (void*) shmem_malloc(buffer_len);
+  int64_t offset = displcmnts[global_state_->controller->GetRank()] * element_size;
   for (auto& e : entries) {
     void* buffer_data_at_offset = (uint8_t*)buffer_data + offset;
-    void* symmetric_buffer_at_offset = (uint8_t*)symmetric_buffer_data + offset;
-    memcpy(symmetric_buffer_at_offset, buffer_data, e.tensor->data(), (size_t)e.tensor->size());
+    void* symmetric_buffer_data_at_offset = (uint8_t*)symmetric_buffer_data + offset;
+    memcpy(symmetric_buffer_data_at_offset, buffer_data_at_offset, (size_t)e.tensor->size());
     offset += e.tensor->size();
   }
-  symmetric_sendbuf = shmem_malloc(first_entry.tensor->size());
-  memcpy(symmetric_sendbuf, first_entry.tensor->data(), first_entry.tensor->size());
-  symmetric_buffer_data = shmem_malloc((size_t)(num_elements) * (size_t)(element_size));
-  memcpy(symmetric_buffer_data, first_entry.tensor->data(), );
+
+  // Create symmetric sendbuf
+  if (sendbuf != nullptr) {
+    symmetric_sendbuf = (void*) shmem_malloc(first_entry.tensor->size());
+    memcpy(symmetric_sendbuf, sendbuf, (size_t)(first_entry.tensor->size()));
+  } else {
+    symmetric_sendbuf = (void*) shmem_malloc(buffer_len);
+    memcpy(symmetric_sendbuf, symmetric_buffer_data, (size_t)buffer_len);
+  }
 
 
   global_state_->timeline.ActivityStartAll(entries, SHMEM_ALLGATHER);
-
-  int op = SHMEM_Allgatherv(sendbuf != nullptr ? sendbuf : SHMEM_IN_PLACE,
-                          (int) total_num_elements,
-                          dtype,
-                          buffer_data,
-                          recvcounts,
-                          displcmnts,
-                          dtype,
-                          shmem_context_->GetSHMEMCommunicator(Communicator::GLOBAL));
-  if (op != SHMEM_SUCCESS) {
-    throw std::runtime_error("SHMEM_Allgatherv failed, see SHMEM output for details.");
+  shmem_barrier_all();
+  switch (shmem_context_->GetSHMEMDataType(e.tensor->dtype())) {
+    case SHMEM_INT:
+      shmem_alltoall32(symmetric_buffer_data, symmetric_sendbuf, (int)total_num_elements, 0, 0, world_size, pWrk_int, pSync);
+    case SHMEM_FLOAT:
+      shmem_alltoall32(symmetric_buffer_data, symmetric_sendbuf, (int)total_num_elements, 0, 0, world_size, pWrk_float, pSync);
+    case SHMEM_DOUBLE:
+      shmem_alltoall64(symmetric_buffer_data, symmetric_sendbuf, (int)total_num_elements, 0, 0, world_size, pWrk_double, pSync);
   }
+
   global_state_->timeline.ActivityEndAll(entries);
+
+  // Copy memory from symmetric back to the local variables
+  memcpy(symmetric_buffer_data, buffer_data, buffer_len);
 
   if (entries.size() > 1) {
     timeline.ActivityStartAll(entries, MEMCPY_OUT_FUSION_BUFFER);
@@ -219,6 +240,10 @@ Status SHMEMAllgather::Execute(std::vector<TensorTableEntry>& entries, const Res
   }
   delete[] entry_component_sizes;
   delete[] entry_component_offsets;
+
+  // Free symmetric memory
+  free(symmetric_buffer_data);
+  free(symmetric_sendbuf);
 
   return Status::OK();
 }

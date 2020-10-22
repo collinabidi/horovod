@@ -174,6 +174,40 @@ void AllgatherOp::MemcpyInFusionBuffer(
   }
 }
 
+void AllgatherOp::SHMEMMemcpyInFusionBuffer(
+    const std::vector<TensorTableEntry>& entries, const int* displcmnts,
+    int element_size, void*& buffer_data, int64_t& offset) {
+  // Access the fusion buffer.
+  auto& first_entry = entries[0];
+  auto buffer = global_state_->fusion_buffer.GetBuffer(
+      first_entry.device, first_entry.context->framework(), global_state_->current_nccl_stream);
+  buffer_data = const_cast<void*>(buffer->AccessData(first_entry.context));
+
+  offset = displcmnts[global_state_->controller->GetRank()] * element_size;
+  for (auto& e : entries) {
+    void* buffer_data_at_offset = (uint8_t*)buffer_data + offset;
+    MemcpyEntryInFusionBuffer(entries, e, buffer_data_at_offset);
+    offset += e.tensor->size();
+  }
+}
+
+void AllgatherOp::SHMEMMemcpyInFusionBuffer(
+    const std::vector<TensorTableEntry>& entries, const int* displcmnts,
+    int element_size, void*& buffer_data, int64_t& offset) {
+  // Access the fusion buffer.
+  auto& first_entry = entries[0];
+  auto buffer = global_state_->fusion_buffer.GetBuffer(
+      first_entry.device, first_entry.context->framework(), global_state_->current_nccl_stream);
+  buffer_data = const_cast<void*>(buffer->AccessData(first_entry.context));
+
+  offset = displcmnts[global_state_->controller->GetRank()] * element_size;
+  for (auto& e : entries) {
+    void* buffer_data_at_offset = (uint8_t*)buffer_data + offset;
+    MemcpyEntryInFusionBuffer(entries, e, buffer_data_at_offset);
+    offset += e.tensor->size();
+  }
+}
+
 void AllgatherOp::MemcpyOutFusionBuffer(
     const int64_t* const* entry_component_offsets,
     const int64_t* const* entry_component_sizes, const void* buffer_data,
