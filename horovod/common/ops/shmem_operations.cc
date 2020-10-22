@@ -17,6 +17,8 @@
 #include "shmem_operations.h"
 #include <shmem.h>
 
+#define SHMEM_SUCCESS 0
+
 namespace horovod {
 namespace common {
 
@@ -39,39 +41,43 @@ void SHMEMContext::Finalize() {
   shmem_finalize();
 }
 
-SHMEMAllreduce::SHMEMAllreduce(MPIContext* mpi_context, HorovodGlobalState* global_state)
-    : AllreduceOp(global_state), mpi_context_(mpi_context) {}
+SHMEMAllreduce::SHMEMAllreduce(SHMEMContext* shmem_context, HorovodGlobalState* global_state)
+    : AllreduceOp(global_state), shmem_context_(shmem_context) {}
 
-Status MPIAllreduce::Execute(std::vector<TensorTableEntry>& entries, const Response& response) {
+Status SHMEMAllreduce::Execute(std::vector<TensorTableEntry>& entries, const Response& response) {
   auto& first_entry = entries[0];
 
   void* buffer_data;
   size_t buffer_len;
   int64_t num_elements = NumElements(entries);
 
-  // Copy memory into the fusion buffer.
+  // Copy tensors into the symmetric memory.
+  // Note: naive assumption that all tensors will have same datatype
+  // #@#@ Need to fix this
   auto& timeline = global_state_->timeline;
-  if (entries.size() > 1) {
-    timeline.ActivityStartAll(entries, MEMCPY_IN_FUSION_BUFFER);
-    const void* fused_input_data;
-    MemcpyInFusionBuffer(entries, fused_input_data, buffer_data, buffer_len);
-    timeline.ActivityEndAll(entries);
-  } else {
-    buffer_data = (void*) first_entry.output->data();
-    buffer_len = (size_t) first_entry.output->size();
-  }
+  int element_size = shmem_context_->GetSHMEMTypeSize(first_entry.tensor->dtype());
+  buffer_len = (size_t)(num_elements) * element_size;
+  std::cout << "Calculated buffer_len: " << buffer_len << std::endl;
+  buffer_data = (void*) shmem_malloc(buffer_len);
+  timeline.ActivityStartAll(entries, SHMEMCPY_IN_FUSION_BUFFER);
+  const void* fused_input_data;
+  MemcpyInFusionBuffer(entries, fused_input_data, buffer_data, buffer_len);
+  timeline.ActivityEndAll(entries);
+  std::cout << "True buffer_len: " << buffer_len << std::endl;
 
   // Do allreduce.
-  timeline.ActivityStartAll(entries, MPI_ALLREDUCE);
-  const void* sendbuf = entries.size() > 1 || first_entry.tensor->data() == first_entry.output->data()
-                        ? MPI_IN_PLACE : first_entry.tensor->data();
-  int op = MPI_Allreduce(sendbuf, buffer_data,
-                         (int) num_elements,
-                         mpi_context_->GetMPIDataType(first_entry.tensor),
-                         mpi_context_->GetMPISumOp(first_entry.tensor->dtype()),
-                         mpi_context_->GetMPICommunicator(Communicator::GLOBAL));
-  if (op != MPI_SUCCESS) {
-    throw std::runtime_error("MPI_Allreduce failed, see MPI output for details.");
+  timeline.ActivityStartAll(entries, SHMEM_ALLREDUCE);
+  const void* sendbuf = (void*) shmem_malloc(buffer_len);
+  memcpy(sendbuf, first_entry.tensor->data(), buffer_len);
+  first_entry.tensor->data();
+  shmem_barrier_all();
+  switch (shmem_context_->GetSHMEMDataType(e.tensor->dtype())) {
+    case SHMEM_INT:
+      shmem_int_sum_to_all(buffer_data, sendbuf, (int)num_elements, 0, 0, world_size, pWrk_int, pSync);
+    case SHMEM_FLOAT:
+      shmem_float_sum_to_all(buffer_data, sendbuf, (int)num_elements, 0, 0, world_size, pWrk_float, pSync);
+    case SHMEM_DOUBLE:
+      shmem_double_sum_to_all(buffer_data, sendbuf, (int)num_elements, 0, 0, world_size, pWrk_double, pSync);
   }
   timeline.ActivityEndAll(entries);
 
@@ -82,25 +88,29 @@ Status MPIAllreduce::Execute(std::vector<TensorTableEntry>& entries, const Respo
     timeline.ActivityEndAll(entries);
   }
 
+  // Free symmetric variables
+  shmem_free(buffer_data);
+  shmem_free(sendbuf);
+
   return Status::OK();
 }
 
-bool MPIAllreduce::Enabled(const ParameterManager& param_manager,
+bool SHMEMAllreduce::Enabled(const ParameterManager& param_manager,
                            const std::vector<TensorTableEntry>& entries,
                            const Response& response) const {
   return true;
 }
 
-MPIAllgather::MPIAllgather(MPIContext* mpi_context, HorovodGlobalState* global_state)
-    : AllgatherOp(global_state), mpi_context_(mpi_context) {}
+SHMEMAllgather::SHMEMAllgather(SHMEMContext* shmem_context, HorovodGlobalState* global_state)
+    : AllgatherOp(global_state), shmem_context_(shmem_context) {}
 
-bool MPIAllgather::Enabled(const ParameterManager& param_manager,
+bool SHMEMAllgather::Enabled(const ParameterManager& param_manager,
                            const std::vector<TensorTableEntry>& entries,
                            const Response& response) const {
   return true;
 }
 
-Status MPIAllgather::Execute(std::vector<TensorTableEntry>& entries, const Response& response) {
+Status SHMEMAllgather::Execute(std::vector<TensorTableEntry>& entries, const Response& response) {
   auto& timeline = global_state_->timeline;
 
   // Sizes of subcomponents of each entry from all ranks
@@ -140,33 +150,56 @@ Status MPIAllgather::Execute(std::vector<TensorTableEntry>& entries, const Respo
   SetDisplacements(recvcounts, displcmnts);
   SetEntryComponentOffsets(entries, entry_component_sizes, recvcounts, entry_component_offsets);
 
-  int element_size = mpi_context_->GetMPITypeSize(first_entry.tensor->dtype());
+  int element_size = shmem_context_->GetSHMEMTypeSize(first_entry.tensor->dtype());
 
   const void* sendbuf = nullptr;
   void* buffer_data;
+  void* symmetric_buffer_data;
+  void* symmetric_sendbuf;
   int64_t total_num_elements = NumElements(entries);
+  int world_size = shmem_n_pes();
+  int world_rank = shmem_my_pe();
+  auto dtype = shmem_context_->GetSHMEMDataType(first_entry.tensor->dtype());
 
   if (entries.size() > 1) {
+    // Copy memory to fusion buffer
     timeline.ActivityStartAll(entries, MEMCPY_IN_FUSION_BUFFER);
     MemcpyInFusionBuffer(entries, displcmnts, element_size, buffer_data);
     timeline.ActivityEndAll(entries);
+    // Need to create sendbuf #@#@
+
   } else {
+    // Create single-entry buffers
     sendbuf = first_entry.tensor->data();
     buffer_data = (void*) first_entry.output->data();
   }
 
-  global_state_->timeline.ActivityStartAll(entries, MPI_ALLGATHER);
-  auto dtype = mpi_context_->GetMPIDataType(first_entry.tensor->dtype());
-  int op = MPI_Allgatherv(sendbuf != nullptr ? sendbuf : MPI_IN_PLACE,
+  // Copy memory to symmetric variables #@#@
+  int64_t offset = 0;
+  for (auto& e : entries) {
+    void* buffer_data_at_offset = (uint8_t*)buffer_data + offset;
+    void* symmetric_buffer_at_offset = (uint8_t*)symmetric_buffer_data + offset;
+    memcpy(symmetric_buffer_at_offset, buffer_data, e.tensor->data(), (size_t)e.tensor->size());
+    offset += e.tensor->size();
+  }
+  symmetric_sendbuf = shmem_malloc(first_entry.tensor->size());
+  memcpy(symmetric_sendbuf, first_entry.tensor->data(), first_entry.tensor->size());
+  symmetric_buffer_data = shmem_malloc((size_t)(num_elements) * (size_t)(element_size));
+  memcpy(symmetric_buffer_data, first_entry.tensor->data(), );
+
+
+  global_state_->timeline.ActivityStartAll(entries, SHMEM_ALLGATHER);
+
+  int op = SHMEM_Allgatherv(sendbuf != nullptr ? sendbuf : SHMEM_IN_PLACE,
                           (int) total_num_elements,
                           dtype,
                           buffer_data,
                           recvcounts,
                           displcmnts,
                           dtype,
-                          mpi_context_->GetMPICommunicator(Communicator::GLOBAL));
-  if (op != MPI_SUCCESS) {
-    throw std::runtime_error("MPI_Allgatherv failed, see MPI output for details.");
+                          shmem_context_->GetSHMEMCommunicator(Communicator::GLOBAL));
+  if (op != SHMEM_SUCCESS) {
+    throw std::runtime_error("SHMEM_Allgatherv failed, see SHMEM output for details.");
   }
   global_state_->timeline.ActivityEndAll(entries);
 
@@ -190,11 +223,11 @@ Status MPIAllgather::Execute(std::vector<TensorTableEntry>& entries, const Respo
   return Status::OK();
 }
 
-MPIHierarchicalAllgather::MPIHierarchicalAllgather(MPIContext* mpi_context,
+SHMEMHierarchicalAllgather::SHMEMHierarchicalAllgather(SHMEMContext* shmem_context,
                                                    HorovodGlobalState* global_state)
-    : MPIAllgather(mpi_context, global_state) {}
+    : SHMEMAllgather(shmem_context, global_state) {}
 
-Status MPIHierarchicalAllgather::Execute(std::vector<TensorTableEntry>& entries, const Response& response) {
+Status SHMEMHierarchicalAllgather::Execute(std::vector<TensorTableEntry>& entries, const Response& response) {
   auto& timeline = global_state_->timeline;
 
   // Sizes of subcomponents of each entry from all ranks
@@ -234,7 +267,7 @@ Status MPIHierarchicalAllgather::Execute(std::vector<TensorTableEntry>& entries,
   SetDisplacements(recvcounts, displcmnts);
   SetEntryComponentOffsets(entries, entry_component_sizes, recvcounts, entry_component_offsets);
 
-  int element_size = mpi_context_->GetMPITypeSize(first_entry.tensor->dtype());
+  int element_size = shmem_context_->GetSHMEMTypeSize(first_entry.tensor->dtype());
 
   int64_t total_size = displcmnts[global_size - 1] +
                        recvcounts[global_size - 1];
@@ -243,8 +276,8 @@ Status MPIHierarchicalAllgather::Execute(std::vector<TensorTableEntry>& entries,
   int64_t total_size_in_bytes = total_size * element_size;
   if (global_state_->shared_buffer == nullptr || global_state_->shared_buffer_size < total_size_in_bytes) {
     if (global_state_->shared_buffer != nullptr) {
-      MPI_Win_fence(0, mpi_context_->window);
-      MPI_Win_free(&mpi_context_->window);
+      MPI_Win_fence(0, shmem_context_->window);
+      MPI_Win_free(&shmem_context_->window);
       global_state_->shared_buffer = nullptr;
     }
 
@@ -253,14 +286,14 @@ Status MPIHierarchicalAllgather::Execute(std::vector<TensorTableEntry>& entries,
     int64_t window_size = global_state_->controller->GetLocalRank() == 0 ? total_size_in_bytes : 0;
     MPI_Win_allocate_shared(window_size,
                             element_size,
-                            MPI_INFO_NULL,
-                            mpi_context_->GetMPICommunicator(Communicator::LOCAL),
+                            SHMEM_INFO_NULL,
+                            shmem_context_->GetSHMEMCommunicator(Communicator::LOCAL),
                             &global_state_->shared_buffer,
-                            &mpi_context_->window);
+                            &shmem_context_->window);
     if (global_state_->controller->GetLocalRank() != 0) {
       int disp_unit;
       MPI_Aint winsize;
-      MPI_Win_shared_query(mpi_context_->window,
+      MPI_Win_shared_query(shmem_context_->window,
                            0,
                            &winsize,
                            &disp_unit,
@@ -314,18 +347,18 @@ Status MPIHierarchicalAllgather::Execute(std::vector<TensorTableEntry>& entries,
 
   // Perform the cross-node allgather. If the cluster is homogeneous all
   // local ranks participate, otherwise local rank 0 handles all data
-  global_state_->timeline.ActivityStartAll(entries, MPI_CROSS_ALLGATHER);
+  global_state_->timeline.ActivityStartAll(entries, SHMEM_CROSS_ALLGATHER);
   if (global_state_->controller->IsHomogeneous() || global_state_->controller->GetLocalRank() == 0) {
-    int op = MPI_Allgatherv(MPI_IN_PLACE,
+    int op = SHMEM_Allgatherv(SHMEM_IN_PLACE,
                             0,
-                            MPI_DATATYPE_NULL,
+                            SHMEM_DATATYPE_NULL,
                             global_state_->shared_buffer,
                             cross_recvcounts,
                             cross_displcmnts,
-                            mpi_context_->GetMPIDataType(first_entry.tensor->dtype()),
-                            mpi_context_->GetMPICommunicator(Communicator::CROSS));
-    if (op != MPI_SUCCESS) {
-      throw std::runtime_error("MPI_Allgatherv failed, see MPI output for details.");
+                            shmem_context_->GetSHMEMDataType(first_entry.tensor->dtype()),
+                            shmem_context_->GetSHMEMCommunicator(Communicator::CROSS));
+    if (op != SHMEM_SUCCESS) {
+      throw std::runtime_error("SHMEM_Allgatherv failed, see SHMEM output for details.");
     }
   }
   Barrier();
@@ -345,17 +378,14 @@ Status MPIHierarchicalAllgather::Execute(std::vector<TensorTableEntry>& entries,
   return Status::OK();
 }
 
-bool MPIHierarchicalAllgather::Enabled(const ParameterManager& param_manager,
+bool SHMEMHierarchicalAllgather::Enabled(const ParameterManager& param_manager,
                                        const std::vector<TensorTableEntry>& entries,
                                        const Response& response) const {
   return param_manager.HierarchicalAllgather();
 }
 
-void MPIHierarchicalAllgather::Barrier() {
-  int op = MPI_Barrier(mpi_context_->GetMPICommunicator(Communicator::GLOBAL));
-  if (op != MPI_SUCCESS) {
-    throw std::runtime_error("MPI_Barrier failed, see MPI output for details.");
-  }
+void SHMEMHierarchicalAllgather::Barrier() {
+  shmem_barrier_all();
 }
 
 SHMEMBroadcast::SHMEMBroadcast(SHMEMContext* shmem_context, HorovodGlobalState* global_state)
@@ -365,46 +395,67 @@ Status SHMEMBroadcast::Execute(std::vector<TensorTableEntry>& entries, const Res
   assert(entries.size() == 1);
   auto e = entries[0];
 
-  // On root rank, shmem_broadcast[32,64] sends data, on other ranks it receives data.
-  /*
-  void* data_ptr;
-  if (global_state_->controller->GetRank() == e.root_rank) {
-    data_ptr = (void*) e.tensor->data();
-  } else {
-    data_ptr = (void*) e.output->data();
-  }
-  */
-  int me = shmem_my_pe();
-  int npes = shmem_n_pes();
+  std::cout << "Calling SHMEM Broadcast!" << std::endl;
 
-  // Dynamically allocate tensors in shared memory as symmetric variables.
+  int world_rank = shmem_my_pe();
+  int world_size = shmem_n_pes();
+  void* data_ptr;
+
+  // Dynamically shmallocate tensors in shared memory as symmetric variables.
   // This is inefficient, since we'll have to do this every single time we call broadcast
   // but it's good enough for now.
-  void* source_ptr = shmem_malloc()
-
-  if (global_state_->controller->GetRank() == e.root_rank) {
-    // shmalloc memory for source data
-
+  switch (shmem_context_->GetSHMEMDataType(e.tensor->dtype())) {
+    case HOROVOD_INT32:
+      data_ptr = (void*) shmem_malloc(sizeof(int32_t) * (int)e.tensor->shape().num_elements());
+    case HOROVOD_INT64:
+      data_ptr = (void*) shmem_malloc(sizeof(int64_t) * (int)e.tensor->shape().num_elements());
+    case HOROVOD_FLOAT32:
+      data_ptr = (void*) shmem_malloc(sizeof(float_t) * (int)e.tensor->shape().num_elements());
+    case HOROVOD_FLOAT64:
+      data_ptr = (void*) shmem_malloc(sizeof(double_t) * (int)e.tensor->shape().num_elements());
   }
 
+  // Fill the symmetric memory with data if on the main PE
+  if (global_state_->controller->GetRank() == e.root_rank) {
+    memcpy(data_ptr, e.tensor->data(), (size_t)(int)e.tensor->shape().num_elements());
+  } else {
+    memcpy(data_ptr, e.output->data(), (size_t)(int)e.output->shape().num_elements());
+  }
+
+  // Barrier
+  shmem_barrier_all();
+
   global_state_->timeline.ActivityStartAll(entries, SHMEM_BCAST);
-  /*
-  int op = MPI_Bcast(data_ptr,
-                     (int) e.tensor->shape().num_elements(),
-                     mpi_context_->GetMPIDataType(e.tensor->dtype()),
-                     e.root_rank,
-                     mpi_context_->GetMPICommunicator(Communicator::GLOBAL));
-  */
-  int op = shmem_broadcast32(dest, source, nelements, PE_root, PE_start, logPE_stride, PE_size, pSync);
-  if (op != MPI_SUCCESS) {
-    throw std::runtime_error("MPI_Broadcast failed, see MPI output for details.");
+
+  // Perform broadcast
+  if (shmem_context_->GetSHMEMDataType(e.tensor->dtype()) == HOROVOD_INT32 || shmem_context_->GetSHMEMDataType(e.tensor->dtype()) == HOROVOD_FLOAT32) {
+    int op = shmem_broadcast32(data_ptr, data_ptr, (int)e.tensor->shape().num_elements(), e.root_rank, 0, 0, world_size, pSync);
+    if (op != SHMEM_SUCCESS) {
+      throw std::runtime_error("SHMEM_Broadcast failed, see SHMEM output for details.");
+    }
+  } else if (shmem_context_->GetSHMEMDataType(e.tensor->dtype()) == HOROVOD_INT64 || shmem_context_->GetSHMEMDataType(e.tensor->dtype()) == HOROVOD_FLOAT64) {
+    int op = shmem_broadcast64(data_ptr, data_ptr, (int)e.tensor->shape().num_elements(), e.root_rank, 0, world_size, pSync);
+    if (op != SHMEM_SUCCESS) {
+      throw std::runtime_error("SHMEM_Broadcast failed, see SHMEM output for details.");
+    }
   }
   global_state_->timeline.ActivityEndAll(entries);
 
+  // Copy results back to the local variables from symmetric memory
+  if (global_state_->controller->GetRank() == e.root_rank) {
+    memcpy(e.tensor->data(), data_ptr, (size_t)(int)e.tensor->shape().num_elements());
+  } else {
+    memcpy(e.output->data(), data_ptr, (size_t)(int)e.output.shape().num_elements());
+  }
+
+  // Deallocate memory
+  shmem_free(data_ptr);
+
+  // Return OK
   return Status::OK();
 }
 
-bool MPIBroadcast::Enabled(const ParameterManager& param_manager,
+bool SHMEMBroadcast::Enabled(const ParameterManager& param_manager,
                            const std::vector<TensorTableEntry>& entries,
                            const Response& response) const {
   return true;

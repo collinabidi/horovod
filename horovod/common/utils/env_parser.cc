@@ -34,6 +34,8 @@ std::string TypeName(LibType type) {
     return std::string(HOROVOD_GLOO);
   case LibType::CCL:
     return std::string(HOROVOD_CCL);
+  case LibType::SHMEM:
+    return std::string(HOROVOD_SHMEM);
   default:
     return std::string("Unknown");
   }
@@ -53,6 +55,8 @@ LibType ParseCPUOpsFromEnv() {
   cpu_operation = LibType::GLOO;
 #elif HOROVOD_CPU_OPERATIONS_DEFAULT == 'C'
   cpu_operation = LibType::CCL;
+#elif HOROVOD_CPU_OPERATIONS_DEFAULT == 'S'
+  cpu_operation = LibType::SHMEM;
 #endif
 
   // If specified by user during runtime
@@ -64,9 +68,11 @@ LibType ParseCPUOpsFromEnv() {
       cpu_operation = LibType::GLOO;
     } else if (strcasecmp(user_cpu_operation, HOROVOD_CCL) == 0) {
       cpu_operation = LibType::CCL;
+    } else if (strcasecmp(user_cpu_operation, HOROVOD_SHMEM) == 0) {
+      cpu_operation = LibType::SHMEM;
     } else {
       throw std::runtime_error("Unsupported CPU operation type, only MPI, "
-                               "oneCCL, and Gloo are supported");
+                               "oneCCL, Gloo, and SHMEM are supported");
     }
   }
 

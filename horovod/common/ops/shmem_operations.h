@@ -24,7 +24,7 @@
 #include "collective_operations.h"
 #include "../common.h"
 #include "../global_state.h"
-//#include "../shmem/shmem_context.h"
+#include "../shmem/shmem_context.h"
 
 namespace horovod {
 namespace common {

@@ -72,6 +72,23 @@ protected:
   MemcpyEntryOutFusionBuffer(const std::vector<TensorTableEntry>& entries,
                              const void* buffer_data_at_offset,
                              TensorTableEntry& e);
+  virtual void
+  MemcpyInSymmetricMemory(const std::vector<TensorTableEntry>& entries,
+                       const void*& fused_input_data, void*& buffer_data,
+                       size_t& buffer_len);
+
+  virtual void MemcpyOutSymmetricMemory(const void* buffer_data,
+                                     std::vector<TensorTableEntry>& entries);
+
+  virtual void
+  MemcpyEntryInSymmetricMemory(const std::vector<TensorTableEntry>& entries,
+                            const TensorTableEntry& e,
+                            void* buffer_data_at_offset);
+
+  virtual void
+  MemcpyEntryOutSymmetricMemory(const std::vector<TensorTableEntry>& entries,
+                             const void* buffer_data_at_offset,
+                             TensorTableEntry& e);
 };
 
 class AllgatherOp : public HorovodOp {
@@ -123,6 +140,8 @@ protected:
                              TensorTableEntry& e,
                              int64_t entry_offset,
                              size_t entry_size);
+
+  // ToDo: add Symmetric Memory declarations
 };
 
 class BroadcastOp : public HorovodOp {

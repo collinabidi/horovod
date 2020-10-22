@@ -188,6 +188,17 @@ def ccl_built(verbose=False):
     raise RuntimeError('Failed to determine if CCL support has been built. '
                        'Run again with --verbose for more details.')
 
+@_cache
+def shmem_built(verbose=False):
+    for ext_base_name in EXTENSIONS:
+        built_fn = lambda ext: ext.shmem_built()
+        result = _check_extension_lambda(
+            ext_base_name, built_fn, 'built with SHMEM', verbose)
+        if result is not None:
+            return result
+    raise RuntimeError('Failed to determine if SHMEM support has been built. '
+                       'Run again with --verbose for more details.')
+
 
 @contextmanager
 def env(**kwargs):

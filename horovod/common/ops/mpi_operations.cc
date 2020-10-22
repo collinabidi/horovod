@@ -32,6 +32,7 @@ Status MPIAllreduce::Execute(std::vector<TensorTableEntry>& entries, const Respo
   // Copy memory into the fusion buffer.
   auto& timeline = global_state_->timeline;
   if (entries.size() > 1) {
+    std::cout << "More than one entry!" << std::endl;
     timeline.ActivityStartAll(entries, MEMCPY_IN_FUSION_BUFFER);
     const void* fused_input_data;
     MemcpyInFusionBuffer(entries, fused_input_data, buffer_data, buffer_len);
@@ -344,6 +345,7 @@ MPIBroadcast::MPIBroadcast(MPIContext* mpi_context, HorovodGlobalState* global_s
 Status MPIBroadcast::Execute(std::vector<TensorTableEntry>& entries, const Response& response) {
   assert(entries.size() == 1);
   auto e = entries[0];
+  std::cout << "Calling MPI Broadcast!" << std::endl;
 
   // On root rank, MPI_Bcast sends data, on other ranks it receives data.
   void* data_ptr;

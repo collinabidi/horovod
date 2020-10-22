@@ -88,8 +88,7 @@ void GlooAlgorithms<T>::Allgather(void* buffer_data, void* buffer_out,
 }
 
 template <typename T>
-void GlooAlgorithms<T>::Broadcast(void* buffer_data, int num_elements,
-                                  int root_rank) {
+void GlooAlgorithms<T>::Broadcast(void* buffer_data, int num_elements, int root_rank) {
   gloo::BroadcastOptions opts(gloo_context_->ctx);
   opts.setRoot(root_rank);
   opts.setOutput<T>(static_cast<T*>(buffer_data), (size_t) num_elements);
@@ -100,12 +99,10 @@ template <typename T> int GlooAlgorithms<T>::ElementSize() const {
   return sizeof(T);
 }
 
-GlooAllreduce::GlooAllreduce(GlooContext* gloo_context,
-                             HorovodGlobalState* global_state)
+GlooAllreduce::GlooAllreduce(GlooContext* gloo_context, HorovodGlobalState* global_state)
     : AllreduceOp(global_state), gloo_context_(gloo_context) {}
 
-Status GlooAllreduce::Execute(std::vector<TensorTableEntry>& entries,
-                              const Response& response) {
+Status GlooAllreduce::Execute(std::vector<TensorTableEntry>& entries, const Response& response) {
   auto& first_entry = entries[0];
 
   void* buffer_data;
@@ -148,8 +145,7 @@ bool GlooAllreduce::Enabled(const ParameterManager& param_manager,
   return true;
 }
 
-GlooAllgather::GlooAllgather(GlooContext* gloo_context,
-                             HorovodGlobalState* global_state)
+GlooAllgather::GlooAllgather(GlooContext* gloo_context, HorovodGlobalState* global_state)
     : AllgatherOp(global_state), gloo_context_(gloo_context) {}
 
 bool GlooAllgather::Enabled(const ParameterManager& param_manager,
@@ -158,8 +154,7 @@ bool GlooAllgather::Enabled(const ParameterManager& param_manager,
   return true;
 }
 
-Status GlooAllgather::Execute(std::vector<TensorTableEntry>& entries,
-                              const Response& response) {
+Status GlooAllgather::Execute(std::vector<TensorTableEntry>& entries, const Response& response) {
   auto& timeline = global_state_->timeline;
 
   // Sizes of subcomponents of each entry from all ranks

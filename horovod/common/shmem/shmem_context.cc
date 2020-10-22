@@ -1,4 +1,5 @@
-// Copyright 2019 Uber Technologies, Inc. All Rights Reserved.
+// Copyright 2016 The TensorFlow Authors. All Rights Reserved.
+// Modifications copyright (C) 2019 Uber Technologies, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -11,237 +12,144 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-// ============================================================================
+// =============================================================================
 
-#include "gloo_context.h"
+#include "shmem_context.h"
 
-#include <chrono>
+#include <iostream>
 #include <memory>
-#include <sstream>
-#include <stdexcept>
+#include <vector>
 
-#include "gloo/rendezvous/context.h"
-#include "gloo/rendezvous/file_store.h"
-#include "gloo/rendezvous/prefix_store.h"
-#include "gloo/transport/tcp/device.h"
-
-#if HAVE_MPI
-#include "gloo/mpi/context.h"
-#endif
-
-#include "http_store.h"
-#include "memory_store.h"
-#include "../utils/env_parser.h"
+#include "../common.h"
+#include "../half.h"
+#include "../logging.h"
 
 namespace horovod {
 namespace common {
 
-// Horovod Gloo rendezvous knobs.
-#define HOROVOD_GLOO_TIMEOUT_SECONDS "HOROVOD_GLOO_TIMEOUT_SECONDS"
-#define HOROVOD_GLOO_RENDEZVOUS_ADDR "HOROVOD_GLOO_RENDEZVOUS_ADDR"
-#define HOROVOD_GLOO_RENDEZVOUS_PORT "HOROVOD_GLOO_RENDEZVOUS_PORT"
-#define HOROVOD_GLOO_GLOBAL_PREFIX "global_"
-#define HOROVOD_GLOO_LOCAL_PREFIX "local_"
-#define HOROVOD_GLOO_CROSS_PREFIX "cross_"
-#define HOROVOD_GLOO_GET_RANK_AND_SIZE "rank_and_size"
-#define HOROVOD_HOSTNAME "HOROVOD_HOSTNAME"
-#define HOROVOD_RANK "HOROVOD_RANK"
-#define HOROVOD_SIZE "HOROVOD_SIZE"
-#define HOROVOD_LOCAL_RANK "HOROVOD_LOCAL_RANK"
-#define HOROVOD_LOCAL_SIZE "HOROVOD_LOCAL_SIZE"
-#define HOROVOD_CROSS_RANK "HOROVOD_CROSS_RANK"
-#define HOROVOD_CROSS_SIZE "HOROVOD_CROSS_SIZE"
-#define HOROVOD_ELASTIC "HOROVOD_ELASTIC"
-
-int ParseNextInt(std::stringstream& ss) {
-  assert(ss.good());
-
-  std::string substr;
-  getline(ss, substr, ',');
-
-  return (int) std::strtol(substr.c_str(), nullptr, 10);
+SHMEM_DataType SHMEMContext::GetSHMEMDataType(const std::shared_ptr<Tensor> tensor) {
+  return GetSHMEMDataType(tensor->dtype());
 }
 
-std::chrono::milliseconds GetTimeoutFromEnv() {
-  auto s = std::chrono::seconds(GetIntEnvOrDefault(HOROVOD_GLOO_TIMEOUT_SECONDS, 30));
-  return std::chrono::duration_cast<std::chrono::milliseconds>(s);
-}
-
-std::shared_ptr<gloo::Context> Rendezvous(const std::string& prefix,
-                                          const char* server_addr_env, int server_port,
-                                          int rank, int size,
-                                          std::shared_ptr<gloo::transport::Device>& dev,
-                                          std::chrono::milliseconds timeout) {
-  std::unique_ptr<GlooStore> store;
-  if (server_addr_env != nullptr) {
-    std::string server_addr = server_addr_env;
-    store.reset(new HTTPStore(server_addr, server_port, prefix, rank));
-  } else {
-    store.reset(new MemoryStore());
-  }
-  LOG(DEBUG) << prefix << " rendezvous started for rank=" << rank << ", size=" << size
-             << ", dev={" << dev->str() << "}";
-
-  auto context = std::make_shared<gloo::rendezvous::Context>(rank, size);
-  context->setTimeout(timeout);
-  context->connectFullMesh(*store, dev);
-  store->Finalize();
-  return context;
-}
-
-#if HAVE_MPI
-void GlooContext::InitializeFromMPI(MPIContext& mpi_ctx,
-                                    const std::string& gloo_iface) {
-  if (!enabled_) {
-    return;
-  }
-
-  // TODO(sihan): Add support for multiple interfaces:
-  //  https://github.com/facebookincubator/gloo/issues/190
-  gloo::transport::tcp::attr attr;
-  attr.iface = gloo_iface;
-  attr.ai_family = AF_UNSPEC;
-  auto dev = gloo::transport::tcp::CreateDevice(attr);
-  auto timeout = GetTimeoutFromEnv();
-
-  auto context =
-      std::make_shared<gloo::mpi::Context>(mpi_ctx.GetMPICommunicator(GLOBAL));
-  context->setTimeout(timeout);
-  context->connectFullMesh(dev);
-  ctx = context;
-
-  auto cross_context =
-      std::make_shared<gloo::mpi::Context>(mpi_ctx.GetMPICommunicator(CROSS));
-  cross_context->setTimeout(timeout);
-  cross_context->connectFullMesh(dev);
-  cross_ctx = cross_context;
-
-  auto local_context =
-      std::make_shared<gloo::mpi::Context>(mpi_ctx.GetMPICommunicator(LOCAL));
-  local_context->setTimeout(timeout);
-  local_context->connectFullMesh(dev);
-  local_ctx = local_context;
-}
-#endif
-
-void GlooContext::Initialize(const std::string& gloo_iface) {
-  if (!enabled_) {
-    return;
-  }
-
-  // Create a tcp device for communication
-  // TODO(sihan): Add support for multiple interfaces:
-  //  https://github.com/facebookincubator/gloo/issues/190
-  gloo::transport::tcp::attr attr;
-  attr.iface = gloo_iface;
-
-  attr.ai_family = AF_UNSPEC;
-  auto dev = gloo::transport::tcp::CreateDevice(attr);
-  auto timeout = GetTimeoutFromEnv();
-
-  int rank = GetIntEnvOrDefault(HOROVOD_RANK, 0);
-  int size = GetIntEnvOrDefault(HOROVOD_SIZE, 1);
-  int local_rank = GetIntEnvOrDefault(HOROVOD_LOCAL_RANK, 0);
-  int local_size = GetIntEnvOrDefault(HOROVOD_LOCAL_SIZE, 1);
-  int cross_rank = GetIntEnvOrDefault(HOROVOD_CROSS_RANK, 0);
-  int cross_size = GetIntEnvOrDefault(HOROVOD_CROSS_SIZE, 1);
-
-  auto rendezvous_addr_env = std::getenv(HOROVOD_GLOO_RENDEZVOUS_ADDR);
-  auto rendezvous_port = GetIntEnvOrDefault(HOROVOD_GLOO_RENDEZVOUS_PORT, -1);
-  if (rendezvous_addr_env != nullptr) {
-    LOG(DEBUG) << "rendezvous server address: " << rendezvous_addr_env;
-  } else {
-    LOG(DEBUG) << "no rendezvous server provided, assuming single process execution";
-  }
-
-  bool elastic = GetBoolEnvOrDefault(HOROVOD_ELASTIC, false);
-  if (elastic && reset_) {
-    LOG(DEBUG) << "elastic mode reinitialization started, reset rank=" << rank << " size=" << size;
-    std::string hostname = std::getenv(HOROVOD_HOSTNAME);
-    std::string server_addr = rendezvous_addr_env;
-    std::string scope = HOROVOD_GLOO_GET_RANK_AND_SIZE;
-    HTTPStore init_store(server_addr, rendezvous_port, scope, rank);
-
-    auto key = hostname + ":" + std::to_string(local_rank);
-    std::vector<char> result = init_store.get(key);
-    std::string s(result.begin(), result.end());
-    std::stringstream ss(s);
-
-    int last_rank = rank;
-    int last_size = size;
-    int last_local_rank = local_rank;
-    int last_local_size = local_size;
-    int last_cross_rank = cross_rank;
-    int last_cross_size = cross_size;
-
-    rank = ParseNextInt(ss);
-    if (rank == -1) {
-      // Signals that this host is not part of the job
-      std::ostringstream out;
-      out << hostname << "[" << local_rank << "] has been removed from elastic job";
-      throw std::runtime_error(out.str());
-    }
-
-    size = ParseNextInt(ss);
-    local_rank = ParseNextInt(ss);
-    local_size = ParseNextInt(ss);
-    cross_rank = ParseNextInt(ss);
-    cross_size = ParseNextInt(ss);
-
-    SetEnv(HOROVOD_RANK, std::to_string(rank).c_str());
-    SetEnv(HOROVOD_SIZE, std::to_string(size).c_str());
-    SetEnv(HOROVOD_LOCAL_RANK, std::to_string(local_rank).c_str());
-    SetEnv(HOROVOD_LOCAL_SIZE, std::to_string(local_size).c_str());
-    SetEnv(HOROVOD_CROSS_RANK, std::to_string(cross_rank).c_str());
-    SetEnv(HOROVOD_CROSS_SIZE, std::to_string(cross_size).c_str());
-    LOG(DEBUG) << "elastic mode reinitialization complete, updated" <<
-                  " rank: " << last_rank << " -> " << rank <<
-                  " size: " << last_size << " -> " << size <<
-                  " local_rank: " << last_local_rank << " -> " << local_rank <<
-                  " local_size: " << last_local_size << " -> " << local_size <<
-                  " cross_rank: " << last_cross_rank << " -> " << cross_rank <<
-                  " cross_size: " << last_cross_size << " -> " << cross_size;
-  }
-
-  ctx = Rendezvous(HOROVOD_GLOO_GLOBAL_PREFIX,
-                   rendezvous_addr_env, rendezvous_port,
-                   rank, size, dev, timeout);
-  LOG(DEBUG) << "Global Gloo context initialized.";
-
-  local_ctx = Rendezvous(HOROVOD_GLOO_LOCAL_PREFIX + std::to_string(cross_rank),
-                         rendezvous_addr_env, rendezvous_port,
-                         local_rank, local_size, dev, timeout);
-  LOG(DEBUG) << "Local Gloo context initialized.";
-
-  cross_ctx = Rendezvous(HOROVOD_GLOO_CROSS_PREFIX + std::to_string(local_rank),
-                         rendezvous_addr_env, rendezvous_port,
-                         cross_rank, cross_size, dev, timeout);
-  LOG(DEBUG) << "Cross-node Gloo context initialized.";
-}
-
-void GlooContext::Finalize() {
-  if (!enabled_) {
-    return;
-  }
-
-  ctx.reset();
-  cross_ctx.reset();
-  local_ctx.reset();
-  reset_ = true;
-}
-
-std::shared_ptr<gloo::Context>
-GlooContext::GetGlooContext(Communicator communicator) {
-  switch (communicator) {
-  case Communicator::GLOBAL:
-    return ctx;
-  case Communicator::LOCAL:
-    return local_ctx;
-  case Communicator::CROSS:
-    return cross_ctx;
+SHMEM_DataType SHMEMContext::GetSHMEMDataType(const DataType dtype) {
+  // As of OpenMPI 5.0.0 which implements the OpenSHMEM 1.4 specification, SHMEM can only support collective
+  // operations with 32- and 64-bit datatypes. Creating a custom method of concatenating data into 32-bit or 
+  // 64-bit arrays is on the to-do list.
+  switch (dtype) {
+  case HOROVOD_UINT8:
+    return SHMEM_UINT8_T;
+  case HOROVOD_INT8:
+    return SHMEM_INT8_T;
+  case HOROVOD_UINT16:
+    //return SHMEM_UINT16_T;
+    throw std::logic_error("Type " + DataType_Name(dtype) +
+                           " is not supported in SHMEM mode.");
+  case HOROVOD_INT16:
+    //return SHMEM_INT16_T;
+    throw std::logic_error("Type " + DataType_Name(dtype) +
+                           " is not supported in SHMEM mode.");
+  case HOROVOD_INT32:
+    return SHMEM_INT32_T;
+  case HOROVOD_INT64:
+    return SHMEM_INT64_T;
+  case HOROVOD_FLOAT16:
+    //return shmem_float16_t;
+    throw std::logic_error("Type " + DataType_Name(dtype) +
+                           " is not supported in SHMEM mode.");
+  case HOROVOD_FLOAT32:
+    return SHMEM_FLOAT;
+  case HOROVOD_FLOAT64:
+    return SHMEM_DOUBLE;
+  case HOROVOD_BOOL:
+    //return SHMEM_C_BOOL;
+    throw std::logic_error("Type " + DataType_Name(dtype) +
+                           " is not supported in SHMEM mode.");
   default:
-    throw std::logic_error("Unsupported communicator type.");
+    throw std::logic_error("Type " + DataType_Name(dtype) +
+                           " is not supported in SHMEM mode.");
   }
+}
+
+int SHMEMContext::GetSHMEMTypeSize(DataType dtype) {
+  switch (GetSHMEMDataType(dtype)) {
+    case SHMEM_UINT8_T:
+      return sizeof(uint8_t);
+    case SHMEM_INT8_T:
+      return sizeof(int8_t);
+    case HOROVOD_UINT16:
+      //return SHMEM_UINT16_T;
+      throw std::logic_error("Type " + DataType_Name(dtype) +
+                            " is not supported in SHMEM mode.");
+    case HOROVOD_INT16:
+      //return SHMEM_INT16_T;
+      throw std::logic_error("Type " + DataType_Name(dtype) +
+                            " is not supported in SHMEM mode.");
+    case SHMEM_INT32_T:
+      return sizeof(int32_t);
+    case SHMEM_INT64_T:
+      return sizeof(int64_t);
+    case HOROVOD_FLOAT16:
+      //return shmem_float16_t;
+      throw std::logic_error("Type " + DataType_Name(dtype) +
+                            " is not supported in SHMEM mode.");
+    case SHMEM_FLOAT:
+      return sizeof(float);
+    case SHMEM_DOUBLE:
+      return sizeof(double);
+    case HOROVOD_BOOL:
+      //return SHMEM_C_BOOL;
+      throw std::logic_error("Type " + DataType_Name(dtype) +
+                            " is not supported in SHMEM mode.");
+    default:
+      throw std::logic_error("Type " + DataType_Name(dtype) +
+                            " is not supported in SHMEM mode.");
+  }
+}
+
+void SHMEMContext::Initialize(SHMEMContextManager& ctx_manager) {
+  if (!enabled_) {
+    return;
+  }
+  // Initialize SHMEM if it was not initialized.
+  auto shmem_threads_disable = std::getenv(HOROVOD_SHMEM_THREADS_DISABLE);
+  int required = SHMEM_THREAD_MULTIPLE;
+  if (shmem_threads_disable != nullptr &&
+      std::strtol(shmem_threads_disable, nullptr, 10) > 0) {
+    required = SHMEM_THREAD_SINGLE;
+  }
+  if (shmem_initialized) {
+    int provided;
+    shmem_query_thread(&provided);
+    if (provided < SHMEM_THREAD_MULTIPLE) {
+      LOG(WARNING)
+          << "SHMEM has already been initialized without "
+             "multi-threading support (SHMEM_THREAD_MULTIPLE). This will "
+             "likely cause a segmentation fault.";
+    }
+  } else {
+    // SHMEM environment has not been created, using manager to initialize.
+    ctx_manager.EnvInitialize(required);
+    should_finalize = true;
+    shmem_initialized = true;
+  }
+}
+
+void SHMEMContext::Finalize(SHMEMContextManager& ctx_manager) {
+  if (!enabled_) {
+    return;
+  }
+  if (should_finalize) {
+    ctx_manager.EnvFinalize();
+  }
+}
+
+void SHMEMContextManager::EnvInitialize(int shmem_threads_required) {
+  int shmem_threads_provided;
+  shmem_init_thread(shmem_threads_required, &shmem_threads_provided);
+}
+
+void SHMEMContextManager::EnvFinalize() {
+  shmem_finalize();
 }
 
 } // namespace common

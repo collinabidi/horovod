@@ -43,6 +43,7 @@ void AllreduceOp::MemcpyInFusionBuffer(
       first_entry.device, first_entry.context->framework(), global_state_->current_nccl_stream);
   buffer_data = const_cast<void*>(buffer->AccessData(first_entry.context));
 
+  // Copy each entry into the fusion buffer.
   int64_t offset = 0;
   for (auto& e : entries) {
     void* buffer_data_at_offset = (uint8_t*)buffer_data + offset;
