@@ -107,11 +107,6 @@ protected:
                        void*& buffer_data);
 
   virtual void
-  SHMEMMemcpyInFusionBuffer(const std::vector<TensorTableEntry>& entries,
-                       const int* displcmnts, int element_size,
-                       void*& buffer_data, int64_t& offset);
-
-  virtual void
   MemcpyOutFusionBuffer(const int64_t* const* entry_component_offsets,
                         const int64_t* const* entry_component_sizes,
                         const void* buffer_data, int element_size,
