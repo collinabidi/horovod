@@ -48,6 +48,7 @@ SHMEMAllreduce::SHMEMAllreduce(SHMEMContext* shmem_context, HorovodGlobalState* 
     : AllreduceOp(global_state), shmem_context_(shmem_context) {}
 
 Status SHMEMAllreduce::Execute(std::vector<TensorTableEntry>& entries, const Response& response) {
+  std::cout << "Executing SHMEM Allreduce!" << std::endl;
   auto& first_entry = entries[0];
 
   // SHMEM variable initialization
@@ -60,11 +61,6 @@ Status SHMEMAllreduce::Execute(std::vector<TensorTableEntry>& entries, const Res
   long pSync[SHMEM_REDUCE_SYNC_SIZE];
   for (int i = 0; i < SHMEM_REDUCE_SYNC_SIZE; i++) {
     pSync[i] = SHMEM_SYNC_VALUE;
-  }
-  for (int i = 0; i < SHMEM_REDUCE_MIN_WRKDATA_SIZE; i++) {
-    pWrk_int[i] = SHMEM_SYNC_VALUE;
-    pWrk_float[i] = SHMEM_SYNC_VALUE;
-    pWrk_double[i] = SHMEM_SYNC_VALUE;
   }
 
   void* buffer_data;
@@ -147,6 +143,7 @@ bool SHMEMAllgather::Enabled(const ParameterManager& param_manager,
 }
 
 Status SHMEMAllgather::Execute(std::vector<TensorTableEntry>& entries, const Response& response) {
+  std::cout << "Executing SHMEM Allgather!" << std::endl;
   auto& timeline = global_state_->timeline;
 
   // Sizes of subcomponents of each entry from all ranks
@@ -205,13 +202,7 @@ Status SHMEMAllgather::Execute(std::vector<TensorTableEntry>& entries, const Res
   long pSync[SHMEM_ALLTOALL_SYNC_SIZE];
   for (int i = 0; i < SHMEM_ALLTOALL_SYNC_SIZE; i++) {
     pSync[i] = SHMEM_SYNC_VALUE;
-  }
-  for (int i = 0; i < SHMEM_REDUCE_MIN_WRKDATA_SIZE; i++) {
-    pWrk_int[i] = SHMEM_SYNC_VALUE;
-    pWrk_float[i] = SHMEM_SYNC_VALUE;
-    pWrk_double[i] = SHMEM_SYNC_VALUE;
-  }
-    
+  }  
 
   if (entries.size() > 1) {
     // Copy memory to fusion buffer
@@ -309,11 +300,6 @@ Status SHMEMBroadcast::Execute(std::vector<TensorTableEntry>& entries, const Res
   long pSync[SHMEM_BCAST_SYNC_SIZE];
   for (int i = 0; i < SHMEM_BCAST_SYNC_SIZE; i++) {
     pSync[i] = SHMEM_SYNC_VALUE;
-  }
-  for (int i = 0; i < SHMEM_REDUCE_MIN_WRKDATA_SIZE; i++) {
-    pWrk_int[i] = SHMEM_SYNC_VALUE;
-    pWrk_float[i] = SHMEM_SYNC_VALUE;
-    pWrk_double[i] = SHMEM_SYNC_VALUE;
   }
 
   int world_rank = shmem_my_pe();
