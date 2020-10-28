@@ -49,7 +49,9 @@ torch_mpi_lib_v2 = Extension('horovod.torch.mpi_lib_v2', [])
 mxnet_mpi_lib = Extension('horovod.mxnet.mpi_lib', [])
 gloo_lib = CMakeExtension('gloo', cmake_lists_dir='third_party/gloo',
                           sources=[])
-
+#@#@ Potentially need to create SHMEM_lib
+shmem_lib = CMakeExtension('shmem', cmake_lists_dir='third_party/shmem',
+                          sources=[])
 ccl_root = os.environ.get('CCL_ROOT')
 have_ccl = ccl_root is not None
 
@@ -357,6 +359,25 @@ def get_mpi_flags():
             'please specify it with the HOROVOD_MPICXX_SHOW environment variable.\n\n'
             '%s' % (show_command, traceback.format_exc()))
 
+def get_shmem_flags():
+    show_command = os.environ.get('HOROVOD_OSHCXX_SHOW', 'oshcxx -show')
+    try:
+        shmem_show_output = subprocess.check_output(
+            shlex.split(show_command), universal_newlines=True).strip()
+        shmem_show_args = shlex.split(shmem_show_output)
+        if not shmem_show_args[0].startswith('-'):
+            # Open MPI and MPICH print compiler name as a first word, skip it
+            shmem_show_args = shmem_show_args[1:]
+        # strip off compiler call portion and always escape each arg
+        return ' '.join(['"' + arg.replace('"', '"\'"\'"') + '"'
+                         for arg in shmem_show_args])
+    except Exception:
+        raise DistutilsPlatformError(
+            '%s failed (see error below), is MPI in $PATH and does your $LD_LIBRARY_PATH point to your OpenMPI bin file?\n'
+            'Note: If your version of MPI has a custom command to show compilation flags, '
+            'please specify it with the HOROVOD_OSHCXX_SHOW environment variable.\n\n'
+            '%s' % (show_command, traceback.format_exc()))
+
 
 def test_compile(build_ext, name, code, libraries=None, include_dirs=None,
                  library_dirs=None,
@@ -635,6 +656,26 @@ def get_common_options(build_ext):
             print('INFO: Cannot find MPI compilation flags, will skip compiling with MPI.')
             have_mpi = False
 
+    compile_without_shmem = os.environ.get('HOROVOD_WITHOUT_SHMEM')
+    shmem_flags = ''
+    if compile_without_shmem:
+        print('INFO: HOROVOD_WITHOUT_SHMEM detected, skip compiling Horovod with SHMEM.')
+        have_shmem = False
+    else:
+        # If without_shmem flag is not set by user, try to get shmem flags
+        try:
+            shmem_flags = get_shmem_flags()
+            have_shmem = True
+        except Exception:
+            if os.environ.get('HOROVOD_WITH_SHMEM'):
+                # Require SHMEM to succeed, otherwise fail the install.
+                raise
+
+            # If exceptions happen, will not use mpi during compilation.
+            print(traceback.format_exc(), file=sys.stderr)
+            print('INFO: Cannot find SHMEM compilation flags, will skip compiling with SHMEM.')
+            have_shmem = False
+
     if not have_gloo and not have_mpi:
         raise RuntimeError('One of Gloo or MPI are required for Horovod to run. Check the logs above for more info.')
 
@@ -753,6 +794,10 @@ def get_common_options(build_ext):
             if not have_mpi:
                 raise RuntimeError('MPI is not installed, try changing HOROVOD_CPU_OPERATIONS.')
             MACROS += [('HOROVOD_CPU_OPERATIONS_DEFAULT', "'M'")]
+        elif cpu_operation.upper() == 'SHMEM':
+            if not have_shmem:
+                raise RuntimeError('SHMEM is not installed, try changing HOROVOD_CPU_OPERATIONS.')
+            MACROS += [('HOROVOD_CPU_OPERATIONS_DEFAULT', "'S'")]
         elif cpu_operation.upper() == 'MLSL':
             raise RuntimeError('Intel(R) MLSL was removed. Upgrade to oneCCL and set HOROVOD_CPU_OPERATIONS=CCL.')
         elif cpu_operation.upper() == 'CCL':
@@ -778,6 +823,14 @@ def get_common_options(build_ext):
                     'horovod/common/ops/adasum_mpi_operations.cc']
         COMPILE_FLAGS += shlex.split(mpi_flags)
         LINK_FLAGS += shlex.split(mpi_flags)
+
+    if have_shmem:
+        MACROS += [('HAVE-shmem', '1')]
+        INCLUDES += ['third_party/shmem']
+        SOURCES += ['horovod/common/shmem/shmem_context.cc',
+                    'horovod/common/ops/shmem_operations.cc']
+        COMPILE_FLAGS += shlex.split(shmem_flags)
+        LINK_FLAGS += shlex.split(shmem_flags)
 
     if have_gloo:
         MACROS += [('HAVE_GLOO', '1')]
