@@ -78,6 +78,11 @@
 #include "ops/gloo_operations.h"
 #endif
 
+#if HAVE_SHMEM
+#include "shmem/shmem_context.h"
+#include "ops/shmem_operations.h"
+#endif
+
 /*
  * Allreduce, Allgather and Broadcast Ops.
  *
@@ -115,6 +120,10 @@ HorovodGlobalState horovod_global;
 
 #if HAVE_MPI
 MPIContext mpi_context;
+#endif
+
+#if HAVE_SHMEM
+SHMEMContext shmem_context;
 #endif
 
 #if HAVE_GLOO
@@ -222,6 +231,17 @@ OperationManager* CreateOperationManager(HorovodGlobalState& state) {
         std::shared_ptr<AllgatherOp>(new MPIAllgather(&mpi_context, &state)));
     broadcast_ops.push_back(
         std::shared_ptr<BroadcastOp>(new MPIBroadcast(&mpi_context, &state)));
+  }
+#endif
+
+#if HAVE_SHMEM
+  if (shmem_context.IsEnabled()){
+    allreduce_ops.push_back(
+        std::shared_ptr<AllreduceOp>(new SHMEMAllreduce(&shmem_context,&state)));
+    allgather_ops.push_back(
+        std::shared_ptr<AllgatherOp>(new SHMEMAllgather(&shmem_context, &state)));
+    broadcast_ops.push_back(
+        std::shared_ptr<BroadcastOp>(new SHMEMBroadcast(&shmem_context, &state)));
   }
 #endif
 
@@ -378,6 +398,11 @@ void BackgroundThreadLoop(HorovodGlobalState& state) {
       gloo_context.Initialize(ParseGlooIface());
     }
 #endif
+
+#if HAVE_SHMEM
+  shmem_context.Initialize();
+#endif
+
   // Initialize controller
   state.controller->Initialize();
 
@@ -546,6 +571,10 @@ void BackgroundThreadLoop(HorovodGlobalState& state) {
   mpi_context.Finalize(mpi_ctx_manager);
 #endif
 
+#if HAVE_SHMEM
+  shmem_context.Finalize();
+#endif
+
 #if HAVE_CCL
   if (state.cpu_operation == LibType::CCL){
     ccl_context.Finalize();
@@ -626,6 +655,13 @@ void InitializeHorovodOnce(const int* ranks, int nranks) {
           horovod_global.tensor_queue, horovod_global.timeline,
           horovod_global.parameter_manager, mpi_context));
       horovod_global.controller->SetRanks(ranks, nranks);
+    }
+#endif
+
+#if HAVE_SHMEM
+    // Enable shmem is it's used either in cpu data transfer
+    if (horovod_global.cpu_operation == LibType::SHMEM) {
+      shmem_context.Enable();
     }
 #endif
 
@@ -750,6 +786,22 @@ bool horovod_mpi_enabled() {
 
 bool horovod_mpi_built() {
 #if HAVE_MPI
+  return true;
+#else
+  return false;
+#endif
+}
+
+bool horovod_shmem_enabled() {
+#if HAVE_SHMEM
+  return shmem_context.IsEnabled();
+#else
+  return false;
+#endif
+}
+
+bool horovod_shmem_built() {
+#if HAVE_SHMEM
   return true;
 #else
   return false;

@@ -49,7 +49,6 @@ torch_mpi_lib_v2 = Extension('horovod.torch.mpi_lib_v2', [])
 mxnet_mpi_lib = Extension('horovod.mxnet.mpi_lib', [])
 gloo_lib = CMakeExtension('gloo', cmake_lists_dir='third_party/gloo',
                           sources=[])
-#@#@ Potentially need to create SHMEM_lib
 shmem_lib = CMakeExtension('shmem', cmake_lists_dir='third_party/shmem',
                           sources=[])
 ccl_root = os.environ.get('CCL_ROOT')
@@ -788,6 +787,7 @@ def get_common_options(build_ext):
     LIBRARIES = []
 
     cpu_operation = os.environ.get('HOROVOD_CPU_OPERATIONS')
+    print("GETTING CPU OPERATIONS")
     if cpu_operation:
         print('INFO: Set default CPU operation to ' + cpu_operation)
         if cpu_operation.upper() == 'MPI':
@@ -825,7 +825,7 @@ def get_common_options(build_ext):
         LINK_FLAGS += shlex.split(mpi_flags)
 
     if have_shmem:
-        MACROS += [('HAVE-shmem', '1')]
+        MACROS += [('HAVE_SHMEM', '1')]
         INCLUDES += ['third_party/shmem']
         SOURCES += ['horovod/common/shmem/shmem_context.cc',
                     'horovod/common/ops/shmem_operations.cc']
@@ -897,6 +897,7 @@ def get_common_options(build_ext):
                 LIBRARIES=LIBRARIES,
                 BUILD_GLOO=have_gloo,
                 BUILD_MPI=have_mpi,
+                BUILD_SHMEM=have_shmem
                 )
 
 
@@ -1596,7 +1597,7 @@ setup(name='horovod',
           'Topic :: Scientific/Engineering :: Artificial Intelligence',
       ],
       ext_modules=[tensorflow_mpi_lib, torch_mpi_lib, torch_mpi_lib_impl,
-                   torch_mpi_lib_v2, mxnet_mpi_lib, gloo_lib],
+                   torch_mpi_lib_v2, mxnet_mpi_lib, gloo_lib, shmem_lib],
       cmdclass={'build_ext': custom_build_ext},
       # cffi is required for PyTorch
       # If cffi is specified in setup_requires, it will need libffi to be installed on the machine,

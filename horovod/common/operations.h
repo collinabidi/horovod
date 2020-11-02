@@ -24,6 +24,10 @@
 #include "mpi.h"
 #endif
 
+#if HAVE_SHMEM
+#include "shmem.h"
+#endif
+
 #include "common.h"
 
 namespace horovod {
@@ -77,6 +81,12 @@ bool horovod_mpi_enabled();
 
 // C interface to return flag indicating whether Horovod was compiled with MPI support.
 bool horovod_mpi_built();
+
+// C interface to return flag indicating whether SHMEM is enabled.
+bool horovod_shmem_enabled();
+
+// C interface to return flag indicating whether Horovod was compiled with SHMEM support.
+bool horovod_shmem_built();
 
 // C interface to return flag indicating whether Gloo is enabled.
 bool horovod_gloo_enabled();

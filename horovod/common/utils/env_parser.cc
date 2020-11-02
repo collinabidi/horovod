@@ -48,6 +48,11 @@ LibType ParseCPUOpsFromEnv() {
   cpu_operation = LibType::CCL;
 #endif
 
+#if HAVE_SHMEM
+  cpu_operation = LibType::SHMEM;
+  std::cout << "Set SHMEM to be CPU operations" << std::endl;
+#endif
+
   // If specified by admin during compiling
 #if HOROVOD_CPU_OPERATIONS_DEFAULT == 'M'
   cpu_operation = LibType::MPI;
@@ -57,6 +62,7 @@ LibType ParseCPUOpsFromEnv() {
   cpu_operation = LibType::CCL;
 #elif HOROVOD_CPU_OPERATIONS_DEFAULT == 'S'
   cpu_operation = LibType::SHMEM;
+  std::cout << "cpu_operation == LibType::SHMEM" << std::endl;
 #endif
 
   // If specified by user during runtime
@@ -64,12 +70,14 @@ LibType ParseCPUOpsFromEnv() {
   if (user_cpu_operation != nullptr) {
     if (strcasecmp(user_cpu_operation, HOROVOD_MPI) == 0) {
       cpu_operation = LibType::MPI;
+      std::cout << "CPU Operations come from MPI" << std::endl;
     } else if (strcasecmp(user_cpu_operation, HOROVOD_GLOO) == 0) {
       cpu_operation = LibType::GLOO;
     } else if (strcasecmp(user_cpu_operation, HOROVOD_CCL) == 0) {
       cpu_operation = LibType::CCL;
     } else if (strcasecmp(user_cpu_operation, HOROVOD_SHMEM) == 0) {
       cpu_operation = LibType::SHMEM;
+      std::cout << "CPU Operations come from SHMEM" << std::endl;
     } else {
       throw std::runtime_error("Unsupported CPU operation type, only MPI, "
                                "oneCCL, Gloo, and SHMEM are supported");
@@ -86,6 +94,7 @@ LibType ParseControllerOpsFromEnv() {
   LibType controller;
 #if HAVE_MPI
   controller = LibType::MPI;
+  std::cout << "Controller is set to be MPI" << std::endl;
 #elif HAVE_GLOO
   controller = LibType::GLOO;
 #endif

@@ -106,7 +106,7 @@ int SHMEMContext::GetSHMEMTypeSize(DataType dtype) {
   }
 }
 
-void SHMEMContext::Initialize(SHMEMContextManager& ctx_manager) {
+void SHMEMContext::Initialize() {
   if (!enabled_) {
     return;
   }
@@ -128,29 +128,20 @@ void SHMEMContext::Initialize(SHMEMContextManager& ctx_manager) {
     }
   } else {
     // SHMEM environment has not been created, using manager to initialize.
-    ctx_manager.EnvInitialize(required);
+    int provided;
+    shmem_init_thread(required, &provided);
     should_finalize = true;
     shmem_initialized = true;
   }
 }
 
-void SHMEMContext::Finalize(SHMEMContextManager& ctx_manager) {
+void SHMEMContext::Finalize() {
   if (!enabled_) {
     return;
   }
   if (should_finalize) {
-    ctx_manager.EnvFinalize();
+    shmem_finalize();
   }
 }
-
-void SHMEMContextManager::EnvInitialize(int shmem_threads_required) {
-  int shmem_threads_provided;
-  shmem_init_thread(shmem_threads_required, &shmem_threads_provided);
-}
-
-void SHMEMContextManager::EnvFinalize() {
-  shmem_finalize();
-}
-
 } // namespace common
 } // namespace horovod

@@ -118,16 +118,6 @@ typedef enum _SHMEM_Op {
   SHMEM_REPLACE  = 0x5800000d
 } SHMEM_Op;
 
-// Base class for managing SHMEM environment.
-class SHMEMContextManager {
-public:
-  // Initialize SHMEM environment
-  virtual void EnvInitialize(int shmem_threads_required);
-
-  // Finalize SHMEM environment.
-  virtual void EnvFinalize();
-};
-
 struct SHMEMContext {
 
   void Enable() {
@@ -141,11 +131,11 @@ struct SHMEMContext {
   // initialization of SHMEM environment.
   // Take an argument of context manager pointer that will take care of
   // initialization of SHMEM environment.
-  void Initialize(SHMEMContextManager& ctx_manager);
+  void Initialize();
 
   // Take an argument of context manager pointer that will take care of
   // finalization of SHMEM environment.
-  void Finalize(SHMEMContextManager& ctx_manager);
+  void Finalize();
   SHMEM_DataType GetSHMEMDataType(std::shared_ptr<Tensor> tensor);
 
   SHMEM_DataType GetSHMEMDataType(DataType dtype);
