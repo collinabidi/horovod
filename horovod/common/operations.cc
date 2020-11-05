@@ -199,6 +199,17 @@ OperationManager* CreateOperationManager(HorovodGlobalState& state) {
       new NCCLAllgather(&nccl_context, &gpu_context, &state)));
 #endif
 
+#if HAVE_SHMEM
+  if (shmem_context.IsEnabled()){
+    allreduce_ops.push_back(
+        std::shared_ptr<AllreduceOp>(new SHMEMAllreduce(&shmem_context,&state)));
+    allgather_ops.push_back(
+        std::shared_ptr<AllgatherOp>(new SHMEMAllgather(&shmem_context, &state)));
+    broadcast_ops.push_back(
+        std::shared_ptr<BroadcastOp>(new SHMEMBroadcast(&shmem_context, &state)));
+  }
+#endif
+
 #if HAVE_GLOO
   if (gloo_context.IsEnabled()) {
     allreduce_ops.push_back(
@@ -231,17 +242,6 @@ OperationManager* CreateOperationManager(HorovodGlobalState& state) {
         std::shared_ptr<AllgatherOp>(new MPIAllgather(&mpi_context, &state)));
     broadcast_ops.push_back(
         std::shared_ptr<BroadcastOp>(new MPIBroadcast(&mpi_context, &state)));
-  }
-#endif
-
-#if HAVE_SHMEM
-  if (shmem_context.IsEnabled()){
-    allreduce_ops.push_back(
-        std::shared_ptr<AllreduceOp>(new SHMEMAllreduce(&shmem_context,&state)));
-    allgather_ops.push_back(
-        std::shared_ptr<AllgatherOp>(new SHMEMAllgather(&shmem_context, &state)));
-    broadcast_ops.push_back(
-        std::shared_ptr<BroadcastOp>(new SHMEMBroadcast(&shmem_context, &state)));
   }
 #endif
 

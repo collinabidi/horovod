@@ -84,6 +84,8 @@ bool MPIAllgather::Enabled(const ParameterManager& param_manager,
 Status MPIAllgather::Execute(std::vector<TensorTableEntry>& entries, const Response& response) {
   auto& timeline = global_state_->timeline;
 
+  std::cout << "Executing MPI Allgather!" << std::endl;
+
   // Sizes of subcomponents of each entry from all ranks
   auto** entry_component_sizes = new int64_t* [entries.size()];
 
@@ -177,6 +179,8 @@ MPIHierarchicalAllgather::MPIHierarchicalAllgather(MPIContext* mpi_context,
 
 Status MPIHierarchicalAllgather::Execute(std::vector<TensorTableEntry>& entries, const Response& response) {
   auto& timeline = global_state_->timeline;
+
+  std::cout << "Executing MPI HierarchichalAllgather!" << std::endl;
 
   // Sizes of subcomponents of each entry from all ranks
   auto** entry_component_sizes = new int64_t* [entries.size()];
@@ -345,7 +349,7 @@ MPIBroadcast::MPIBroadcast(MPIContext* mpi_context, HorovodGlobalState* global_s
 Status MPIBroadcast::Execute(std::vector<TensorTableEntry>& entries, const Response& response) {
   assert(entries.size() == 1);
   auto e = entries[0];
-  std::cout << "Calling MPI Broadcast!" << std::endl;
+  std::cout << "Calling MPI Broadcast from " << global_state_->controller->GetRank() << std::endl;
 
   // On root rank, MPI_Bcast sends data, on other ranks it receives data.
   void* data_ptr;
