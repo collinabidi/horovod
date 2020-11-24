@@ -61,9 +61,9 @@ int SHMEMContext::GetSHMEMTypeSize(DataType dtype) {
     case SHMEM_INT64_T:
       return sizeof(int64_t);
     case SHMEM_FLOAT:
-      return sizeof(float);
+      return sizeof(float_t);
     case SHMEM_DOUBLE:
-      return sizeof(double);
+      return sizeof(double_t);
     default:
       throw std::logic_error("Type " + DataType_Name(dtype) +
                             " is not supported in SHMEM mode.");
@@ -74,7 +74,6 @@ SHMEMAllreduce::SHMEMAllreduce(SHMEMContext* shmem_context, HorovodGlobalState* 
     : AllreduceOp(global_state), shmem_context_(shmem_context) {}
 
 Status SHMEMAllreduce::Execute(std::vector<TensorTableEntry>& entries, const Response& response) {
-  std::cout << "Executing SHMEM Allreduce!" << std::endl;
   auto& first_entry = entries[0];
 
   // SHMEM variable initialization
@@ -101,20 +100,20 @@ Status SHMEMAllreduce::Execute(std::vector<TensorTableEntry>& entries, const Res
   int element_size = shmem_context_->GetSHMEMTypeSize(first_entry.tensor->dtype());
   buffer_len = (size_t)(num_elements) * element_size;
   if (entries.size() > 1) {
-    std::cout << "More than one element on Allreduce!" << std::endl;
     timeline.ActivityStartAll(entries, MEMCPY_IN_FUSION_BUFFER);
     const void* fused_input_data;
     MemcpyInFusionBuffer(entries, fused_input_data, buffer_data, buffer_len);
     timeline.ActivityEndAll(entries);
   } else {
-    std::cout << "Just one element on Allreduce!" << std::endl;
-    std::cout << first_entry.output->data() << std::endl;
     buffer_data = (void*) first_entry.output->data();
     buffer_len = (size_t) first_entry.output->size();
   }
 
   symmetric_buffer_data = (void*) shmem_malloc(buffer_len);
   memcpy(symmetric_buffer_data, buffer_data, buffer_len);
+
+  std::cout << "Data in the buffer: " << *(float*)buffer_data << std::endl;
+  std::cout << "Data in the symmetric buffer: " << *(float*)symmetric_buffer_data << std::endl;
 
   // Do allreduce.
   timeline.ActivityStartAll(entries, SHMEM_ALLREDUCE);
@@ -123,23 +122,27 @@ Status SHMEMAllreduce::Execute(std::vector<TensorTableEntry>& entries, const Res
   void* symmetric_sendbuf = (void*) shmem_malloc(buffer_len);
   memcpy(symmetric_sendbuf, sendbuf, buffer_len);
   shmem_barrier_all();
+
+  std::cout << "Data in the sendbuf: " << *(float*)sendbuf << std::endl;
+  std::cout << "Data in the symmetric sendbuf: " << *(float*)symmetric_sendbuf << std::endl;
+
+
   auto dtype = shmem_context_->GetSHMEMDataType(first_entry.tensor->dtype());
   if (dtype == SHMEM_INT) {
-    std::cout << "Allreduce: sum INT to all" << std::endl;
-    shmem_int_sum_to_all((int*)symmetric_buffer_data, (int*)symmetric_sendbuf, (int)num_elements, 0, 0, world_size, pWrk_int, pSync);
+    shmem_int_sum_to_all((int*)symmetric_buffer_data, (int*)symmetric_sendbuf, (int)num_elements, 0, 1, world_size, pWrk_int, pSync);
   }
   else if (dtype == SHMEM_FLOAT) {
-    std::cout << "Allreduce: sum FLOAT to all" << std::endl;
-    shmem_float_sum_to_all((float*)symmetric_buffer_data, (float*)symmetric_sendbuf, (int)num_elements, 0, 0, world_size, pWrk_float, pSync);
+    shmem_float_sum_to_all((float*)symmetric_buffer_data, (float*)symmetric_sendbuf, (int)num_elements, 0, 1, world_size, pWrk_float, pSync);
   }
   else if (dtype == SHMEM_DOUBLE) {
-    std::cout << "Allreduce: sum DOUBLE to all" << std::endl;
-    shmem_double_sum_to_all((double*)symmetric_buffer_data, (double*)symmetric_sendbuf, (int)num_elements, 0, 0, world_size, pWrk_double, pSync);
+    shmem_double_sum_to_all((double*)symmetric_buffer_data, (double*)symmetric_sendbuf, (int)num_elements, 0, 1, world_size, pWrk_double, pSync);
   }
   else {
     throw std::logic_error("ALLREDUCE: REEE not done with typecasting yet ");
   }
   timeline.ActivityEndAll(entries);
+
+  shmem_barrier_all();
 
   // Copy memory from symmetric back to the local variables
   memcpy(symmetric_buffer_data, buffer_data, buffer_len);
@@ -174,7 +177,6 @@ bool SHMEMAllgather::Enabled(const ParameterManager& param_manager,
 }
 
 Status SHMEMAllgather::Execute(std::vector<TensorTableEntry>& entries, const Response& response) {
-  std::cout << "Executing SHMEM Allgather!" << std::endl;
   auto& timeline = global_state_->timeline;
 
   // Sizes of subcomponents of each entry from all ranks
@@ -263,7 +265,6 @@ Status SHMEMAllgather::Execute(std::vector<TensorTableEntry>& entries, const Res
     memcpy(symmetric_sendbuf, symmetric_buffer_data, (size_t)buffer_len);
   }
 
-  std::cout << "Type recieved: " << dtype << std::endl;
   global_state_->timeline.ActivityStartAll(entries, SHMEM_ALLGATHER);
   shmem_barrier_all();
   switch (dtype) {
@@ -325,7 +326,6 @@ Status SHMEMBroadcast::Execute(std::vector<TensorTableEntry>& entries, const Res
   assert(entries.size() == 1);
   auto e = entries[0];
 
-  std::cout << "Calling SHMEM Broadcast!" << std::endl;
 
   // SHMEM variable initialization
   int pWrk_int[SHMEM_BCAST_SYNC_SIZE];
