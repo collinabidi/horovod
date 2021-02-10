@@ -32,18 +32,24 @@ SHMEM_DataType SHMEMContext::GetSHMEMDataType(const DataType dtype) {
   // operations with 32- and 64-bit datatypes. Creating a custom method of concatenating data into 32-bit or 
   // 64-bit arrays is on the to-do list.
   switch (dtype) {
-  case HOROVOD_UINT8:
-    return SHMEM_UINT8_T;
   case HOROVOD_INT8:
     return SHMEM_INT8_T;
+  case HOROVOD_INT16:
+    return SHMEM_INT16_T;
   case HOROVOD_INT32:
     return SHMEM_INT32_T;
   case HOROVOD_INT64:
     return SHMEM_INT64_T;
+  case HOROVOD_UINT8:
+    return SHMEM_UINT8_T;
+  case HOROVOD_UINT16:
+    return SHMEM_UINT16_T;
   case HOROVOD_FLOAT32:
     return SHMEM_FLOAT;
   case HOROVOD_FLOAT64:
     return SHMEM_DOUBLE;
+  case HOROVOD_BOOL:
+    return SHMEM_C_BOOL;
   default:
     throw std::logic_error("Type " + DataType_Name(dtype) +
                            " is not supported in SHMEM mode.");
@@ -53,16 +59,22 @@ SHMEM_DataType SHMEMContext::GetSHMEMDataType(const DataType dtype) {
 int SHMEMContext::GetSHMEMTypeSize(DataType dtype) {
   switch (GetSHMEMDataType(dtype)) {
     case SHMEM_UINT8_T:
+      fprintf(stderr, "[DEBUG][%d] sizeof uint8_t -> %d\n", __LINE__, sizeof(uint8_t));
       return sizeof(uint8_t);
     case SHMEM_INT8_T:
+      fprintf(stderr, "[DEBUG][%d] sizeof int8_t -> %d\n", __LINE__, sizeof(int8_t));
       return sizeof(int8_t);
     case SHMEM_INT32_T:
+      fprintf(stderr, "[DEBUG][%d] sizeof int32_t -> %d\n", __LINE__, sizeof(int32_t));
       return sizeof(int32_t);
     case SHMEM_INT64_T:
+      fprintf(stderr, "[DEBUG][%d] sizeof int64_t -> %d\n", __LINE__, sizeof(int64_t));
       return sizeof(int64_t);
     case SHMEM_FLOAT:
+      fprintf(stderr, "[DEBUG][%d] sizeof float_t -> %d\n", __LINE__, sizeof(float_t));
       return sizeof(float_t);
     case SHMEM_DOUBLE:
+      fprintf(stderr, "[DEBUG][%d] sizeof double_t -> %d\n", __LINE__, sizeof(double_t));
       return sizeof(double_t);
     default:
       throw std::logic_error("Type " + DataType_Name(dtype) +
@@ -74,6 +86,7 @@ SHMEMAllreduce::SHMEMAllreduce(SHMEMContext* shmem_context, HorovodGlobalState* 
     : AllreduceOp(global_state), shmem_context_(shmem_context) {}
 
 Status SHMEMAllreduce::Execute(std::vector<TensorTableEntry>& entries, const Response& response) {
+  //std::cout << "SHMEM Allreduce" << std::endl;
   auto& first_entry = entries[0];
 
   // SHMEM variable initialization
@@ -98,7 +111,7 @@ Status SHMEMAllreduce::Execute(std::vector<TensorTableEntry>& entries, const Res
   // #@#@ Need to fix this
   auto& timeline = global_state_->timeline;
   int element_size = shmem_context_->GetSHMEMTypeSize(first_entry.tensor->dtype());
-  buffer_len = (size_t)(num_elements) * element_size;
+
   if (entries.size() > 1) {
     timeline.ActivityStartAll(entries, MEMCPY_IN_FUSION_BUFFER);
     const void* fused_input_data;
@@ -111,38 +124,37 @@ Status SHMEMAllreduce::Execute(std::vector<TensorTableEntry>& entries, const Res
 
   symmetric_buffer_data = (void*) shmem_malloc(buffer_len);
   memcpy(symmetric_buffer_data, buffer_data, buffer_len);
+  fprintf(stderr, "[DEBUG][%d] data in buffer -> %d\n", __LINE__, *(double*)buffer_data);
 
-  std::cout << "Data in the buffer: " << *(float*)buffer_data << std::endl;
-  std::cout << "Data in the symmetric buffer: " << *(float*)symmetric_buffer_data << std::endl;
 
-  // Do allreduce.
+  //std::cout << "Data in the buffer: " << *(float*)buffer_data << std::endl;
+  //std::cout << "Data in the symmetric buffer: " << *(float*)symmetric_buffer_data << std::endl;
+
   timeline.ActivityStartAll(entries, SHMEM_ALLREDUCE);
   const void* sendbuf = entries.size() > 1 || first_entry.tensor->data() == first_entry.output->data()
                         ? buffer_data : first_entry.tensor->data();
-  void* symmetric_sendbuf = (void*) shmem_malloc(buffer_len);
+  void* symmetric_sendbuf = (void*) shmem_malloc(buffer_len * element_size);
   memcpy(symmetric_sendbuf, sendbuf, buffer_len);
   shmem_barrier_all();
 
-  std::cout << "Data in the sendbuf: " << *(float*)sendbuf << std::endl;
-  std::cout << "Data in the symmetric sendbuf: " << *(float*)symmetric_sendbuf << std::endl;
+  //std::cout << "Data in the sendbuf: " << *(float*)sendbuf << std::endl;
+  //std::cout << "Data in the symmetric sendbuf: " << *(float*)symmetric_sendbuf << std::endl;
 
-
+  // Do allreduce.
   auto dtype = shmem_context_->GetSHMEMDataType(first_entry.tensor->dtype());
   if (dtype == SHMEM_INT) {
-    shmem_int_sum_to_all((int*)symmetric_buffer_data, (int*)symmetric_sendbuf, (int)num_elements, 0, 1, world_size, pWrk_int, pSync);
+    shmem_int_sum_to_all((int*)symmetric_buffer_data, (int*)symmetric_sendbuf, (int)num_elements, 0, 0, world_size, pWrk_int, pSync);
   }
   else if (dtype == SHMEM_FLOAT) {
-    shmem_float_sum_to_all((float*)symmetric_buffer_data, (float*)symmetric_sendbuf, (int)num_elements, 0, 1, world_size, pWrk_float, pSync);
+    shmem_float_sum_to_all((float*)symmetric_buffer_data, (float*)symmetric_sendbuf, (int)num_elements, 0, 0, world_size, pWrk_float, pSync);
   }
   else if (dtype == SHMEM_DOUBLE) {
-    shmem_double_sum_to_all((double*)symmetric_buffer_data, (double*)symmetric_sendbuf, (int)num_elements, 0, 1, world_size, pWrk_double, pSync);
+    shmem_double_sum_to_all((double*)symmetric_buffer_data, (double*)symmetric_sendbuf, (int)num_elements, 0, 0, world_size, pWrk_double, pSync);
   }
   else {
     throw std::logic_error("ALLREDUCE: REEE not done with typecasting yet ");
   }
   timeline.ActivityEndAll(entries);
-
-  shmem_barrier_all();
 
   // Copy memory from symmetric back to the local variables
   memcpy(symmetric_buffer_data, buffer_data, buffer_len);
@@ -158,6 +170,8 @@ Status SHMEMAllreduce::Execute(std::vector<TensorTableEntry>& entries, const Res
   shmem_free(symmetric_buffer_data);
   shmem_free(symmetric_sendbuf);
 
+  // Return OK
+  //std::cout << "DONE SHMEM Allreduce" << std::endl;
   return Status::OK();
 }
 
@@ -178,6 +192,8 @@ bool SHMEMAllgather::Enabled(const ParameterManager& param_manager,
 
 Status SHMEMAllgather::Execute(std::vector<TensorTableEntry>& entries, const Response& response) {
   auto& timeline = global_state_->timeline;
+
+  //std::cout << "SHMEM Allgather" << std::endl;
 
   // Sizes of subcomponents of each entry from all ranks
   auto** entry_component_sizes = new int64_t* [entries.size()];
@@ -230,6 +246,9 @@ Status SHMEMAllgather::Execute(std::vector<TensorTableEntry>& entries, const Res
 
   // SHMEM variable initialization
   long pSync[SHMEM_ALLTOALL_SYNC_SIZE];
+  int pWrk_int[SHMEM_REDUCE_SYNC_SIZE];
+  float pWrk_float[SHMEM_REDUCE_SYNC_SIZE];
+  double pWrk_double[SHMEM_REDUCE_SYNC_SIZE];
   for (int i = 0; i < SHMEM_ALLTOALL_SYNC_SIZE; i++) {
     pSync[i] = SHMEM_SYNC_VALUE;
   }  
@@ -266,7 +285,8 @@ Status SHMEMAllgather::Execute(std::vector<TensorTableEntry>& entries, const Res
   }
 
   global_state_->timeline.ActivityStartAll(entries, SHMEM_ALLGATHER);
-  shmem_barrier_all();
+
+  /*
   switch (dtype) {
     case SHMEM_INT32_T:
       shmem_alltoall32(symmetric_buffer_data, symmetric_sendbuf, (int)total_num_elements, 0, 0, world_size, pSync);
@@ -283,6 +303,24 @@ Status SHMEMAllgather::Execute(std::vector<TensorTableEntry>& entries, const Res
     default:
       throw std::logic_error("Allgather: REEE Not done with typecasting yet ");
   }
+  */
+ switch (dtype) {
+    case SHMEM_INT32_T:
+      shmem_collect32(symmetric_buffer_data, symmetric_sendbuf, (int)total_num_elements, 0, 0, world_size, pSync);
+    case SHMEM_UINT32_T:
+      shmem_collect32(symmetric_buffer_data, symmetric_sendbuf, (int)total_num_elements, 0, 0, world_size, pSync);
+    case SHMEM_FLOAT:
+      shmem_fcollect64(symmetric_buffer_data, symmetric_sendbuf, (int)total_num_elements, 0, 0, world_size, pSync);
+    case SHMEM_INT64_T:
+      shmem_collect64(symmetric_buffer_data, symmetric_sendbuf, (int)total_num_elements, 0, 0, world_size, pSync);
+    case SHMEM_UINT64_T:
+      shmem_collect64(symmetric_buffer_data, symmetric_sendbuf, (int)total_num_elements, 0, 0, world_size, pSync);
+    case SHMEM_DOUBLE:
+      shmem_fcollect64(symmetric_buffer_data, symmetric_sendbuf, (int)total_num_elements, 0, 0, world_size, pSync);
+    default:
+      throw std::logic_error("Allgather: REEE Not done with typecasting yet ");
+  }
+
 
   global_state_->timeline.ActivityEndAll(entries);
 
@@ -310,6 +348,11 @@ Status SHMEMAllgather::Execute(std::vector<TensorTableEntry>& entries, const Res
   shmem_free(symmetric_buffer_data);
   shmem_free(symmetric_sendbuf);
 
+  // Wait until all are done
+  shmem_barrier_all();
+
+  // Return OK
+  //std::cout << "DONE SHMEM Allgather" << std::endl;
   return Status::OK();
 }
 
@@ -326,6 +369,7 @@ Status SHMEMBroadcast::Execute(std::vector<TensorTableEntry>& entries, const Res
   assert(entries.size() == 1);
   auto e = entries[0];
 
+  //std::cout << "SHMEM Broadcast" << std::endl;
 
   // SHMEM variable initialization
   int pWrk_int[SHMEM_BCAST_SYNC_SIZE];
@@ -398,8 +442,13 @@ Status SHMEMBroadcast::Execute(std::vector<TensorTableEntry>& entries, const Res
 
   // Deallocate memory
   shmem_free(const_cast<void*>(data_ptr));
+  //shmem_free(data_ptr);
+
+  // Wait until done
+  shmem_barrier_all();
 
   // Return OK
+  //std::cout << "DONE SHMEM Broadcast" << std::endl;
   return Status::OK();
 }
 
