@@ -59,7 +59,7 @@ These are versions of packages/libraries that are necessary/known to work when u
 
 **h5py**: ``2.10.0``
 
-**cffi**: 1.14.3``
+**cffi**: ``1.14.3``
 
 **cloudpickle**: ``1.6.0``
 
