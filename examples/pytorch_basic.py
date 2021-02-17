@@ -87,9 +87,11 @@ if __name__ == '__main__':
     print("[DEBUG] Value at device {} is {} ({})".format(hvd.rank(), val, type(val)))
 
     # Allreduce the values
-    print("[DEBUG] Performing allreduce")
+    print("[DEBUG] ALLREDUCE")
     result = metric_average(val, 'average_vals')
+    print("[DEBUG] ALLREDUCE FINISHED")
     print("[DEBUG] Resulting value of averaging is -> {}".format(result))
 
+    print("[DEBUG] SHUTDOWN")
     hvd.shutdown()
-    
+    print("[DEBUG] SHUTDOWN FINISHED")
