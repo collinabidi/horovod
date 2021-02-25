@@ -33,22 +33,31 @@ SHMEM_DataType SHMEMContext::GetSHMEMDataType(const DataType dtype) {
   // 64-bit arrays is on the to-do list.
   switch (dtype) {
   case HOROVOD_INT8:
+    fprintf(stderr, "[DEBUG][%d] HOROVOD_DATATYPE -> HOROVOD_INT8\n", __LINE__);
     return SHMEM_INT8_T;
   case HOROVOD_INT16:
+    fprintf(stderr, "[DEBUG][%d] HOROVOD_DATATYPE -> HOROVOD_INT16\n", __LINE__);
     return SHMEM_INT16_T;
   case HOROVOD_INT32:
+    fprintf(stderr, "[DEBUG][%d] HOROVOD_DATATYPE -> HOROVOD_INT32\n", __LINE__);
     return SHMEM_INT32_T;
   case HOROVOD_INT64:
+    fprintf(stderr, "[DEBUG][%d] HOROVOD_DATATYPE -> HOROVOD_INT64\n", __LINE__);
     return SHMEM_INT64_T;
   case HOROVOD_UINT8:
+    fprintf(stderr, "[DEBUG][%d] HOROVOD_DATATYPE -> HOROVOD_UINT8\n", __LINE__);
     return SHMEM_UINT8_T;
   case HOROVOD_UINT16:
+    fprintf(stderr, "[DEBUG][%d] HOROVOD_DATATYPE -> HOROVOD_UINT16\n", __LINE__);
     return SHMEM_UINT16_T;
   case HOROVOD_FLOAT32:
+    fprintf(stderr, "[DEBUG][%d] HOROVOD_DATATYPE -> HOROVOD_FLOAT32\n", __LINE__);
     return SHMEM_FLOAT;
   case HOROVOD_FLOAT64:
+    fprintf(stderr, "[DEBUG][%d] HOROVOD_DATATYPE -> HOROVOD_FLOAT64\n", __LINE__);
     return SHMEM_DOUBLE;
   case HOROVOD_BOOL:
+    fprintf(stderr, "[DEBUG][%d] HOROVOD_DATATYPE -> HOROVOD_BOOL\n", __LINE__);
     return SHMEM_C_BOOL;
   default:
     throw std::logic_error("Type " + DataType_Name(dtype) +
@@ -59,22 +68,16 @@ SHMEM_DataType SHMEMContext::GetSHMEMDataType(const DataType dtype) {
 int SHMEMContext::GetSHMEMTypeSize(DataType dtype) {
   switch (GetSHMEMDataType(dtype)) {
     case SHMEM_UINT8_T:
-      fprintf(stderr, "[DEBUG][%d] sizeof uint8_t -> %d\n", __LINE__, sizeof(uint8_t));
       return sizeof(uint8_t);
     case SHMEM_INT8_T:
-      fprintf(stderr, "[DEBUG][%d] sizeof int8_t -> %d\n", __LINE__, sizeof(int8_t));
       return sizeof(int8_t);
     case SHMEM_INT32_T:
-      fprintf(stderr, "[DEBUG][%d] sizeof int32_t -> %d\n", __LINE__, sizeof(int32_t));
       return sizeof(int32_t);
     case SHMEM_INT64_T:
-      fprintf(stderr, "[DEBUG][%d] sizeof int64_t -> %d\n", __LINE__, sizeof(int64_t));
       return sizeof(int64_t);
     case SHMEM_FLOAT:
-      fprintf(stderr, "[DEBUG][%d] sizeof float_t -> %d\n", __LINE__, sizeof(float_t));
       return sizeof(float_t);
     case SHMEM_DOUBLE:
-      fprintf(stderr, "[DEBUG][%d] sizeof double_t -> %d\n", __LINE__, sizeof(double_t));
       return sizeof(double_t);
     default:
       throw std::logic_error("Type " + DataType_Name(dtype) +
@@ -105,59 +108,52 @@ Status SHMEMAllreduce::Execute(std::vector<TensorTableEntry>& entries, const Res
   void* symmetric_buffer_data;
   size_t buffer_len;
   int64_t num_elements = NumElements(entries);
+  const void* fused_input_data;
 
   // Copy tensors into the symmetric memory.
   // Note: naive assumption that all tensors will have same datatype
-  // #@#@ Need to fix this
   auto& timeline = global_state_->timeline;
   int element_size = shmem_context_->GetSHMEMTypeSize(first_entry.tensor->dtype());
+  auto dtype = shmem_context_->GetSHMEMDataType(first_entry.tensor->dtype());
 
   if (entries.size() > 1) {
     timeline.ActivityStartAll(entries, MEMCPY_IN_FUSION_BUFFER);
-    const void* fused_input_data;
     MemcpyInFusionBuffer(entries, fused_input_data, buffer_data, buffer_len);
     timeline.ActivityEndAll(entries);
   } else {
+    fused_input_data = first_entry.tensor->data();
     buffer_data = (void*) first_entry.output->data();
     buffer_len = (size_t) first_entry.output->size();
   }
 
   symmetric_buffer_data = (void*) shmem_malloc(buffer_len);
-  memcpy(symmetric_buffer_data, buffer_data, buffer_len);
-  fprintf(stderr, "[DEBUG][%d] data in buffer -> %d\n", __LINE__, *(double*)buffer_data);
 
-
-  //std::cout << "Data in the buffer: " << *(float*)buffer_data << std::endl;
-  //std::cout << "Data in the symmetric buffer: " << *(float*)symmetric_buffer_data << std::endl;
-
-  timeline.ActivityStartAll(entries, SHMEM_ALLREDUCE);
-  const void* sendbuf = entries.size() > 1 || first_entry.tensor->data() == first_entry.output->data()
-                        ? buffer_data : first_entry.tensor->data();
-  void* symmetric_sendbuf = (void*) shmem_malloc(buffer_len * element_size);
+  const void* sendbuf = entries.size() > 1 || fused_input_data == buffer_data
+                        ? symmetric_buffer_data : fused_input_data;
+  void* symmetric_sendbuf = (void*) shmem_malloc(buffer_len);
   memcpy(symmetric_sendbuf, sendbuf, buffer_len);
-  shmem_barrier_all();
-
-  //std::cout << "Data in the sendbuf: " << *(float*)sendbuf << std::endl;
-  //std::cout << "Data in the symmetric sendbuf: " << *(float*)symmetric_sendbuf << std::endl;
 
   // Do allreduce.
-  auto dtype = shmem_context_->GetSHMEMDataType(first_entry.tensor->dtype());
+  shmem_barrier_all();
+  timeline.ActivityStartAll(entries, SHMEM_ALLREDUCE);
   if (dtype == SHMEM_INT) {
-    shmem_int_sum_to_all((int*)symmetric_buffer_data, (int*)symmetric_sendbuf, (int)num_elements, 0, 0, world_size, pWrk_int, pSync);
+    shmem_int_sum_to_all((int*)(symmetric_buffer_data), (int*)symmetric_sendbuf, num_elements, 0, 0, world_size, pWrk_int, pSync);
   }
   else if (dtype == SHMEM_FLOAT) {
-    shmem_float_sum_to_all((float*)symmetric_buffer_data, (float*)symmetric_sendbuf, (int)num_elements, 0, 0, world_size, pWrk_float, pSync);
+    shmem_float_sum_to_all((float *)(symmetric_buffer_data), (float*)symmetric_sendbuf, num_elements, 0, 0, world_size, pWrk_float, pSync);
   }
   else if (dtype == SHMEM_DOUBLE) {
-    shmem_double_sum_to_all((double*)symmetric_buffer_data, (double*)symmetric_sendbuf, (int)num_elements, 0, 0, world_size, pWrk_double, pSync);
+    shmem_double_sum_to_all((double *)(symmetric_buffer_data), (double*)symmetric_sendbuf, num_elements, 0, 0, world_size, pWrk_double, pSync);
   }
   else {
     throw std::logic_error("ALLREDUCE: REEE not done with typecasting yet ");
   }
   timeline.ActivityEndAll(entries);
+  shmem_barrier_all();
 
   // Copy memory from symmetric back to the local variables
-  memcpy(symmetric_buffer_data, buffer_data, buffer_len);
+  memcpy(buffer_data, symmetric_buffer_data, buffer_len);
+  shmem_barrier_all();
 
   // Copy memory out of the fusion buffer.
   if (entries.size() > 1) {
@@ -165,6 +161,8 @@ Status SHMEMAllreduce::Execute(std::vector<TensorTableEntry>& entries, const Res
     MemcpyOutFusionBuffer(buffer_data, entries);
     timeline.ActivityEndAll(entries);
   }
+
+  shmem_barrier_all();
 
   // Free symmetric variables
   shmem_free(symmetric_buffer_data);
@@ -390,15 +388,23 @@ Status SHMEMBroadcast::Execute(std::vector<TensorTableEntry>& entries, const Res
   auto dtype = shmem_context_->GetSHMEMDataType(e.tensor->dtype());
   if (dtype ==  SHMEM_INT32_T) {
     data_ptr = (void*) shmem_malloc(sizeof(int32_t) * e.tensor->shape().num_elements());
+    fprintf(stderr, "[DEBUG][%d] num elements -> %ld\n", __LINE__,  e.tensor->shape().num_elements());
+    fprintf(stderr, "[DEBUG][%d] data in buffer -> %d\n", __LINE__, *(int*)(data_ptr));
   }
   else if (dtype == SHMEM_INT64_T) {
     data_ptr = (void*) shmem_malloc(sizeof(int64_t) * e.tensor->shape().num_elements());
+    fprintf(stderr, "[DEBUG][%d] num elements -> %ld\n", __LINE__,  e.tensor->shape().num_elements());
+    fprintf(stderr, "[DEBUG][%d] data in buffer -> %ld\n", __LINE__, *(int64_t*)(data_ptr));
   }
   else if (dtype == SHMEM_FLOAT) {
     data_ptr = (void*) shmem_malloc(sizeof(float_t) * e.tensor->shape().num_elements());
+    fprintf(stderr, "[DEBUG][%d] num elements -> %ld\n", __LINE__,  e.tensor->shape().num_elements());
+    fprintf(stderr, "[DEBUG][%d] data in buffer -> %f\n", __LINE__, *(float*)(data_ptr));
   }
   else if (dtype == SHMEM_DOUBLE) {
     data_ptr = (void*) shmem_malloc(sizeof(double_t) * e.tensor->shape().num_elements());
+    fprintf(stderr, "[DEBUG][%d] num elements -> %ld\n", __LINE__,  e.tensor->shape().num_elements());
+    fprintf(stderr, "[DEBUG][%d] data in buffer -> %lf\n", __LINE__, *(double*)(data_ptr));
   }
   else {
     throw std::logic_error("BROADCAST: REEE Not done with typecasting yet");

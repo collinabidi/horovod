@@ -80,18 +80,14 @@ if __name__ == '__main__':
             mp._supports_context and 'forkserver' in mp.get_all_start_methods()):
         kwargs['multiprocessing_context'] = 'forkserver'
 
-    model = Net()
-
-    # Create a random tensor for allreducing
-    val = float(5.0) * float(hvd.rank() + 1)
-    print("[DEBUG] Value at device {} is {} ({})".format(hvd.rank(), val, type(val)))
-
+    # Create a float tensor for allreducing
+    val = float(1.0) + float(hvd.rank() * 4)
+    print("\n\n[DEBUG][Device {}] Local value is {} ({})".format(hvd.rank(), val, type(val)))
     # Allreduce the values
-    print("[DEBUG] ALLREDUCE")
+    print("[DEBUG][Device {}] ALLREDUCE".format(hvd.rank()))
     result = metric_average(val, 'average_vals')
-    print("[DEBUG] ALLREDUCE FINISHED")
-    print("[DEBUG] Resulting value of averaging is -> {}".format(result))
+    print("[DEBUG][Device {}] Resulting value of averaging is -> {}".format(hvd.rank(),result))
 
-    print("[DEBUG] SHUTDOWN")
+    # Shut down Horovod
+    print("[DEBUG][Device {}] SHUTDOWN".format(hvd.rank()))
     hvd.shutdown()
-    print("[DEBUG] SHUTDOWN FINISHED")
