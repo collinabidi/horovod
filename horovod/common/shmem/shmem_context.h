@@ -150,9 +150,9 @@ struct SHMEMContext {
   bool should_finalize = false;
 
   // Custom SHMEM synchronization variables
-  int pWrk_int[SHMEM_REDUCE_SYNC_SIZE];
-  float pWrk_float[SHMEM_REDUCE_SYNC_SIZE];
-  double pWrk_double[SHMEM_REDUCE_SYNC_SIZE];
+  static int pWrk_int[SHMEM_REDUCE_SYNC_SIZE];
+  static float pWrk_float[SHMEM_REDUCE_SYNC_SIZE];
+  static double pWrk_double[SHMEM_REDUCE_SYNC_SIZE];
   static long pSync[SHMEM_BCAST_SYNC_SIZE];
 };
 

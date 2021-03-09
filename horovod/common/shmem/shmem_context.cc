@@ -50,6 +50,7 @@ void SHMEMContext::Initialize() {
   } else {
     // SHMEM environment has not been created, using manager to initialize.
     int provided;
+    std::cout << "SHMEM Initialized with " << required << " threads" << std::endl;
     shmem_init_thread(required, &provided);
     should_finalize = true;
     shmem_initialized = true;

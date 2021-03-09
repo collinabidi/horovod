@@ -541,13 +541,17 @@ void BackgroundThreadLoop(HorovodGlobalState& state) {
     LOG(ERROR) << "Horovod background loop uncaught exception: " << ex.what();
   }
 
-    // Finalize all contexts
+// Finalize all contexts
 #if HAVE_NCCL
   nccl_context.ShutDown();
 #endif
 
 #if HAVE_GLOO
   gloo_context.Finalize();
+#endif
+
+#if HAVE_SHMEM
+  shmem_context.Finalize();
 #endif
 
   LOG(DEBUG, horovod_global.controller->GetRank()) << "Shutting down background thread";
@@ -569,10 +573,6 @@ void BackgroundThreadLoop(HorovodGlobalState& state) {
 
 #if HAVE_MPI
   mpi_context.Finalize(mpi_ctx_manager);
-#endif
-
-#if HAVE_SHMEM
-  shmem_context.Finalize();
 #endif
 
 #if HAVE_CCL
@@ -715,6 +715,7 @@ void horovod_init_comm(MPI_Comm comm) {
 #endif
 
 void horovod_shutdown() {
+  fprintf(stderr, "[DEBUG][%d] horovod_shutdown threads\n", __LINE__);
   if (horovod_global.background_thread.joinable()) {
     horovod_global.shut_down = true;
     horovod_global.background_thread.join();

@@ -6,6 +6,8 @@ import torch.optim as optim
 from torchvision import datasets, transforms
 import torch.utils.data.distributed
 import horovod.torch as hvd
+import time
+from memory_profiler import profile
 
 # Training settings
 parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
@@ -49,7 +51,7 @@ class Net(nn.Module):
         x = self.fc2(x)
         return F.log_softmax(x)
 
-
+#@profile(precision=4)
 def train(epoch):
     model.train()
     # Horovod: set epoch to sampler for shuffling.
@@ -72,6 +74,7 @@ def train(epoch):
 
 def metric_average(val, name):
     tensor = torch.tensor(val)
+    print("Horovod is allreducing the following values: {} {}".format(tensor, type(tensor)))
     avg_tensor = hvd.allreduce(tensor, name=name)
     return avg_tensor.item()
 
@@ -85,7 +88,7 @@ def test():
             data, target = data.cuda(), target.cuda()
         output = model(data)
         # sum up batch loss
-        test_loss += F.nll_loss(output, target, size_average=False).item()
+        test_loss += F.nll_loss(output, target, reduction=False).item()
         # get the index of the max log-probability
         pred = output.data.max(1, keepdim=True)[1]
         test_accuracy += pred.eq(target.data.view_as(pred)).cpu().float().sum()
@@ -180,7 +183,11 @@ if __name__ == '__main__':
                                          named_parameters=model.named_parameters(),
                                          compression=compression,
                                          op=hvd.Adasum if args.use_adasum else hvd.Average)
-
-    for epoch in range(1, args.epochs + 1):
-        train(epoch)
-        test()
+    #tick = time.perf_counter()
+    #for epoch in range(1, args.epochs + 1):
+    #    train(epoch)
+    #    test()
+    #tock = time.perf_counter()
+    #print("TrainTime,{}".format(tock-tick))
+    
+    hvd.shutdown()

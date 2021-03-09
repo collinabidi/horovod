@@ -81,6 +81,55 @@ void AllreduceOp::MemcpyEntryOutFusionBuffer(
               (size_t)e.output->size());
 }
 
+/***********************************************************************************************************************/
+// SHMEM versions of Allreduce ops
+void AllreduceOp::SHMemcpyInFusionBuffer(
+    const std::vector<TensorTableEntry>& entries, const void*& fused_input_data,
+    void*& buffer_data, size_t& buffer_len) {
+  // Access the fusion buffer.
+  auto& first_entry = entries[0];
+  auto buffer = global_state_->fusion_buffer.GetBuffer(
+      first_entry.device, first_entry.context->framework(), global_state_->current_nccl_stream);
+  buffer_data = const_cast<void*>(buffer->AccessData(first_entry.context));
+
+  // Copy each entry into the fusion buffer.
+  int64_t offset = 0;
+  for (auto& e : entries) {
+    void* buffer_data_at_offset = (uint8_t*)buffer_data + offset;
+    MemcpyEntryInFusionBuffer(entries, e, buffer_data_at_offset);
+    offset += e.tensor->size();
+  }
+
+  buffer_len = (size_t)offset;
+
+  // Set the input data to originate from the buffer.
+  fused_input_data = buffer_data;
+}
+
+void AllreduceOp::SHMemcpyEntryInFusionBuffer(
+    const std::vector<TensorTableEntry>& entries, const TensorTableEntry& e,
+    void* buffer_data_at_offset) {
+  std::memcpy(buffer_data_at_offset, e.tensor->data(),
+              (size_t)e.tensor->size());
+}
+
+void AllreduceOp::SHMemcpyOutFusionBuffer(
+    const void* buffer_data, std::vector<TensorTableEntry>& entries) {
+  int64_t offset = 0;
+  for (auto& e : entries) {
+    void* buffer_data_at_offset = (uint8_t*)buffer_data + offset;
+    MemcpyEntryOutFusionBuffer(entries, buffer_data_at_offset, e);
+    offset += e.output->size();
+  }
+}
+
+void AllreduceOp::SHMemcpyEntryOutFusionBuffer(
+    const std::vector<TensorTableEntry>& entries,
+    const void* buffer_data_at_offset, TensorTableEntry& e) {
+  std::memcpy((void*)e.output->data(), buffer_data_at_offset,
+              (size_t)e.output->size());
+}
+/***********************************************************************************************************************/
 // Allgather
 AllgatherOp::AllgatherOp(HorovodGlobalState* global_state)
     : HorovodOp(global_state) {}
