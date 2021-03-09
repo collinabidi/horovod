@@ -88,27 +88,25 @@ Status SHMEMAllreduce::Execute(std::vector<TensorTableEntry>& entries, const Res
     pSync[i] = SHMEM_SYNC_VALUE;
   }
 
+  const void* fused_input_data;
   void* buffer_data;
   void* symmetric_buffer_data;
   size_t buffer_len;
   int64_t num_elements = NumElements(entries);
 
-  // Copy tensors into the symmetric memory.
-  // Note: naive assumption that all tensors will have same datatype
-  // #@#@ Need to fix this
+  // Copy memory into the fusion buffer.
   auto& timeline = global_state_->timeline;
-  int element_size = shmem_context_->GetSHMEMTypeSize(first_entry.tensor->dtype());
-  buffer_len = (size_t)(num_elements) * element_size;
   if (entries.size() > 1) {
     timeline.ActivityStartAll(entries, MEMCPY_IN_FUSION_BUFFER);
-    const void* fused_input_data;
     MemcpyInFusionBuffer(entries, fused_input_data, buffer_data, buffer_len);
     timeline.ActivityEndAll(entries);
   } else {
+    fused_input_data = first_entry.tensor->data();
     buffer_data = (void*) first_entry.output->data();
     buffer_len = (size_t) first_entry.output->size();
   }
 
+  // Copy memory from fusion buffer to symmetric memory (temporary intermediate step)
   symmetric_buffer_data = (void*) shmem_malloc(buffer_len);
   memcpy(symmetric_buffer_data, buffer_data, buffer_len);
 
@@ -117,15 +115,14 @@ Status SHMEMAllreduce::Execute(std::vector<TensorTableEntry>& entries, const Res
 
   // Do allreduce.
   timeline.ActivityStartAll(entries, SHMEM_ALLREDUCE);
-  const void* sendbuf = entries.size() > 1 || first_entry.tensor->data() == first_entry.output->data()
-                        ? buffer_data : first_entry.tensor->data();
+  const void* sendbuf = entries.size() > 1 || fused_input_data == buffer_data
+                        ? buffer_data : fused_input_data;
   void* symmetric_sendbuf = (void*) shmem_malloc(buffer_len);
   memcpy(symmetric_sendbuf, sendbuf, buffer_len);
   shmem_barrier_all();
 
   std::cout << "Data in the sendbuf: " << *(float*)sendbuf << std::endl;
   std::cout << "Data in the symmetric sendbuf: " << *(float*)symmetric_sendbuf << std::endl;
-
 
   auto dtype = shmem_context_->GetSHMEMDataType(first_entry.tensor->dtype());
   if (dtype == SHMEM_INT) {
@@ -153,6 +150,8 @@ Status SHMEMAllreduce::Execute(std::vector<TensorTableEntry>& entries, const Res
     MemcpyOutFusionBuffer(buffer_data, entries);
     timeline.ActivityEndAll(entries);
   }
+
+  std::cout << "FINAL data in the buffer: " << *(float*)buffer_data << std::endl;
 
   // Free symmetric variables
   shmem_free(symmetric_buffer_data);
