@@ -58,6 +58,8 @@ class EstimatorParams(Params):
     callbacks = Param(Params._dummy(), 'callbacks', 'callbacks')
     batch_size = Param(Params._dummy(), 'batch_size', 'batch size',
                        typeConverter=TypeConverters.toInt)
+    val_batch_size = Param(Params._dummy(), 'val_batch_size', 'validation batch size',
+                           typeConverter=TypeConverters.toInt)
     epochs = Param(Params._dummy(), 'epochs', 'epochs', typeConverter=TypeConverters.toInt)
     train_steps_per_epoch = Param(Params._dummy(), 'train_steps_per_epoch',
                                   'number of training (batches) steps per epoch',
@@ -88,6 +90,8 @@ class EstimatorParams(Params):
                               'function that applies custom transformations to '
                               'every batch before train and validation steps')
 
+    label_shapes = Param(Params._dummy(), 'label_shapes', 'specifies the shape (or shapes) of the label column (or columns)')
+
     def __init__(self):
         super(EstimatorParams, self).__init__()
 
@@ -107,6 +111,7 @@ class EstimatorParams(Params):
             gradient_compression=None,
             compress_sparse_cols=False,
             batch_size=32,
+            val_batch_size=None,
             epochs=1,
             verbose=1,
             callbacks=[],
@@ -117,7 +122,8 @@ class EstimatorParams(Params):
             validation_steps_per_epoch=None,
             transformation_fn=None,
             train_reader_num_workers=2,
-            val_reader_num_workers=2)
+            val_reader_num_workers=2,
+            label_shapes=None)
 
     def _check_params(self, metadata):
         model = self.getModel()
@@ -220,6 +226,12 @@ class EstimatorParams(Params):
     def getBatchSize(self):
         return self.getOrDefault(self.batch_size)
 
+    def setValBatchSize(self, value):
+        return self._set(val_batch_size=value)
+
+    def getValBatchSize(self):
+        return self.getOrDefault(self.val_batch_size)
+
     def setEpochs(self, value):
         return self._set(epochs=value)
 
@@ -297,6 +309,12 @@ class EstimatorParams(Params):
 
     def getValReaderNumWorker(self):
         return self.getOrDefault(self.val_reader_num_workers)
+
+    def setLabelShapes(self, value):
+        return self._set(label_shapes=value)
+
+    def getLabelShapes(self):
+        return self.getOrDefault(self.label_shapes)
 
 
 class ModelParams(HasOutputCols):

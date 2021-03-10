@@ -148,7 +148,7 @@ def data_type_to_numpy(dtype):
 
 
 def check_shape_compatibility(metadata, feature_columns, label_columns,
-                              input_shapes=None, output_shapes=None):
+                              input_shapes=None, output_shapes=None, label_shapes=None):
     # Check for model and input type incompatibility. Columns must have the same size
     # (total number of elements) of the corresponding inputs.
     feature_count = len(feature_columns)
@@ -171,24 +171,36 @@ def check_shape_compatibility(metadata, feature_columns, label_columns,
                     'model input at index {idx} with size {input}'
                     .format(col=col, feature=col_size, idx=idx, input=input_size))
 
-    if output_shapes is not None:
-        label_count = len(label_columns)
-        if label_count != len(output_shapes):
-            raise ValueError('Label column count {labels} must equal '
-                             'model outputs count {outputs}'
-                             .format(labels=label_count, outputs=len(output_shapes)))
+    label_count = len(label_columns)
+    if label_shapes is not None and label_count != len(label_shapes):
+        raise ValueError('Label column count {labels} must equal '
+                         'provided label shapes count {outputs}'
+                         .format(labels=label_count, outputs=len(label_shapes)))
 
-        for idx, col, output_shape in zip(range(label_count), label_columns, output_shapes):
+    if output_shapes is not None and label_count != len(output_shapes):
+        raise ValueError('Label column count {labels} must equal '
+                         'model outputs count {outputs}'
+                         .format(labels=label_count, outputs=len(output_shapes)))
+
+    def _check_label_cols_size(target_shapes, target_name):
+        for idx, col, target_shape in zip(range(label_count), label_columns, target_shapes):
             col_size = metadata[col]['shape']
             if col_size is None:
                 # When training directly on Parquet, we do not compute shape metadata
                 continue
 
-            output_size = abs(np.prod(output_shape))
-            if col_size != output_size:
+            target_size = abs(np.prod(target_shape))
+            if col_size != target_size:
                 raise ValueError('Label column \'{col}\' with size {label} must equal that of the '
-                                 'model output at index {idx} with size {output}'
-                                 .format(col=col, label=col_size, idx=idx, output=output_size))
+                                 '{target_name} shape at index {idx} with size {output}'
+                                 .format(col=col, label=col_size, idx=idx, output=target_size,
+                                         target_name=target_name))
+
+    if label_shapes is not None:
+        _check_label_cols_size(label_shapes, 'label')
+    elif output_shapes is not None:
+        # Check the label size against the model output shapes only if label_shapes is not provided.
+        _check_label_cols_size(output_shapes, 'model output')
 
 
 def _get_col_info(df):
@@ -683,3 +695,53 @@ def to_list(var, length):
                              "label_cols")
 
     return var
+
+
+def _get_assigned_gpu_or_default(default):
+    from horovod.spark.task import get_available_devices
+    available_devices = get_available_devices()
+    if available_devices:
+        # if GPU-aware scheduling is available, pin to the assigned GPU index
+        return int(available_devices[0])
+    else:
+        # pin to default GPU index (local rank)
+        return default
+
+
+def is_databricks():
+    return "DATABRICKS_RUNTIME_VERSION" in os.environ
+
+
+def get_output_cols(input_df_schema, output_cols):
+    final_output_cols = [f.name for f in input_df_schema.fields]
+    return final_output_cols + output_cols
+
+
+def get_spark_df_output_schema(input_df_schema, label_cols, output_cols, metadata):
+    if len(label_cols) != len(output_cols):
+        raise Exception('Number of output columns must equal to number of label columns.')
+
+    import copy
+    from pyspark.sql.types import StructType, StructField
+    from pyspark.ml.linalg import VectorUDT
+
+    ## output col name should not be the same as any data in existing df
+    input_df_col_set = {f.name for f in input_df_schema.fields}
+    for col in output_cols:
+        if col in input_df_col_set:
+            raise ValueError("Output col '{}' exists in original df schema: {}".format(col, input_df_col_set))
+
+    # assuming the label_cols and output_cols are 1:1 mapping.
+    output_fields = copy.deepcopy(input_df_schema.fields)
+    for label_col, output_col in zip(label_cols, output_cols):
+        col_type = metadata[label_col]['spark_data_type']
+        if col_type == DenseVector or col_type == SparseVector:
+            col_type = VectorUDT
+
+        field = StructField(output_col, col_type(), True)
+        output_fields.append(field)
+
+    # Final output schema contains both input and output fields
+    output_schema = StructType(output_fields)
+
+    return output_schema

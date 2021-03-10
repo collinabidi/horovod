@@ -1,4 +1,5 @@
 // Copyright 2019 Uber Technologies, Inc. All Rights Reserved.
+// Modifications copyright (C) 2020, NVIDIA CORPORATION. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,8 +27,9 @@ class MPIController : public Controller {
 public:
   MPIController(ResponseCache& response_cache, TensorQueue& tensor_queue,
                 Timeline& timeline, ParameterManager& parameter_manager,
-                MPIContext& mpi_ctx)
-      : Controller(response_cache, tensor_queue, timeline, parameter_manager),
+                GroupTable& group_table, MPIContext& mpi_ctx)
+      : Controller(response_cache, tensor_queue, timeline, parameter_manager,
+                   group_table),
         mpi_ctx_(mpi_ctx) {
     LOG(DEBUG) << "MPI Controller Initialized.";
   }
@@ -52,6 +54,9 @@ public:
   void RecvFinalTensors(ResponseList& response_list) override;
 
   void Bcast(void* buffer, size_t size, int root_rank, Communicator communicator) override;
+
+  void AlltoallGetRecvSplits(const std::vector<int32_t>& splits,
+                             std::vector<int32_t>& recvsplits) override;
 
   void Barrier(Communicator communicator) override;
 

@@ -15,9 +15,9 @@
 
 
 class BaseSettings(object):
-    def __init__(self, num_proc=None, verbose=0, ssh_port=None, extra_mpi_args=None, tcp_flag=None,
-                 binding_args=None, key=None, start_timeout=None, output_filename=None,
-                 run_func_mode=None, nics=None, elastic=False):
+    def __init__(self, num_proc=None, verbose=0, ssh_port=None, ssh_identity_file=None, extra_mpi_args=None,
+                 tcp_flag=None, binding_args=None, key=None, start_timeout=None, output_filename=None,
+                 run_func_mode=None, nics=None, elastic=False, prefix_output_with_timestamp=False):
         """
         :param num_proc: number of horovod processes (-np)
         :type num_proc: int
@@ -25,6 +25,8 @@ class BaseSettings(object):
         :type verbose: int
         :param ssh_port: SSH port on all the hosts
         :type ssh_port: int
+        :param ssh_identity_file: SSH identity (private key) file
+        :type ssh_identity_file: string
         :param extra_mpi_args: Extra MPI arguments to pass to mpirun
         :type extra_mpi_args: string
         :param tcp_flag: TCP only communication flag
@@ -43,10 +45,13 @@ class BaseSettings(object):
         :type nics: string
         :param elastic: enable elastic auto-scaling and fault tolerance mode
         :type elastic: boolean
+        :param prefix_output_with_timestamp: shows timestamp in stdout/stderr forwarding on the driver
+        :type prefix_output_with_timestamp: boolean
         """
         self.num_proc = num_proc
         self.verbose = verbose
         self.ssh_port = ssh_port
+        self.ssh_identity_file = ssh_identity_file
         self.extra_mpi_args = extra_mpi_args
         self.tcp_flag = tcp_flag
         self.binding_args = binding_args
@@ -56,6 +61,7 @@ class BaseSettings(object):
         self.run_func_mode = run_func_mode
         self.nics = nics
         self.elastic = elastic
+        self.prefix_output_with_timestamp = prefix_output_with_timestamp
 
 
 class Settings(BaseSettings):

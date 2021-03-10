@@ -15,8 +15,8 @@
 // =============================================================================
 
 #include "gpu_operations.h"
+#include "../message.h"
 
-#include <pthread.h>
 #include <thread>
 
 namespace horovod {
@@ -102,7 +102,7 @@ public:
         if (error_check_callback) {
           error_check_callback();
         }
-        pthread_yield();
+        std::this_thread::yield();
       }
 
       if (name != "") {
@@ -144,6 +144,11 @@ public:
 
   void MemcpyAsyncD2H(void* dst, const void* src, size_t count, hipStream_t stream) {
     ErrorCheck("hipMemcpyAsync", hipMemcpyAsync(dst, src, count, hipMemcpyDeviceToHost, stream));
+  }
+
+  void ScaleBufferImpl(const void* fused_input_data, void* buffer_data, int64_t num_elements,
+                   double scale_factor, DataType dtype, hipStream_t stream) {
+    throw std::logic_error("ScaleBuffer not implemented for AMD GPUs.");
   }
 
 private:

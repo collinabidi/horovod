@@ -31,6 +31,7 @@ from horovod.runner.elastic.driver import ElasticDriver
 from horovod.runner.elastic.rendezvous import create_rendezvous_handler
 from horovod.runner.http.http_server import RendezvousServer
 from horovod.runner.util import network, threads
+from horovod.runner.util.remote import get_remote_command
 
 
 def _pad_rank(rank, size):
@@ -61,6 +62,20 @@ class MultiFile(object):
             f.flush()
 
 
+def create_slot_env_vars(slot_info):
+    host_name = slot_info.hostname
+    horovod_rendez_env = {
+        "HOROVOD_HOSTNAME": str(host_name),
+        "HOROVOD_RANK": str(slot_info.rank),
+        "HOROVOD_SIZE": str(slot_info.size),
+        "HOROVOD_LOCAL_RANK": str(slot_info.local_rank),
+        "HOROVOD_LOCAL_SIZE": str(slot_info.local_size),
+        "HOROVOD_CROSS_RANK": str(slot_info.cross_rank),
+        "HOROVOD_CROSS_SIZE": str(slot_info.cross_size)
+    }
+    return horovod_rendez_env
+
+
 def _slot_info_to_command_fn(run_command, env):
     # TODO: Workaround for over-buffered outputs. Investigate how mpirun avoids this problem.
     env = copy.copy(env)  # copy env so we do not leak env modifications
@@ -73,22 +88,9 @@ def _slot_info_to_command_fn(run_command, env):
         :param slot_info: host and slot to execute the run command on
         :return:
         """
-        host_name = slot_info.hostname
-        horovod_rendez_env = (
-            'HOROVOD_HOSTNAME={hostname} '
-            'HOROVOD_RANK={rank} '
-            'HOROVOD_SIZE={size} '
-            'HOROVOD_LOCAL_RANK={local_rank} '
-            'HOROVOD_LOCAL_SIZE={local_size} '
-            'HOROVOD_CROSS_RANK={cross_rank} '
-            'HOROVOD_CROSS_SIZE={cross_size} '
-                .format(hostname=host_name,
-                        rank=slot_info.rank,
-                        size=slot_info.size,
-                        local_rank=slot_info.local_rank,
-                        local_size=slot_info.local_size,
-                        cross_rank=slot_info.cross_rank,
-                        cross_size=slot_info.cross_size))
+        env_vars = create_slot_env_vars(slot_info)
+        horovod_rendez_env = " ".join(
+            [f"{k}={str(v)}" for k, v in env_vars.items()])
 
         return '{horovod_env} {env} {run_command}' .format(
             horovod_env=horovod_rendez_env,
@@ -128,8 +130,6 @@ def _exec_command_fn(settings):
     :return:
     :rtype:
     """
-    ssh_port_arg = '-p {ssh_port}'.format(ssh_port=settings.ssh_port) if settings.ssh_port else ''
-
     def _exec_command(command, slot_info, events):
         index = slot_info.rank
         host_name = slot_info.hostname
@@ -137,13 +137,12 @@ def _exec_command_fn(settings):
         host_address = network.resolve_host_address(host_name)
         local_addresses = network.get_local_host_addresses()
         if host_address not in local_addresses:
-            command = 'ssh -o PasswordAuthentication=no -o StrictHostKeyChecking=no ' \
-                      '{host} {ssh_port_arg} ' \
-                      '{local_command}'\
-                .format(host=host_name,
-                        ssh_port_arg=ssh_port_arg,
-                        local_command=quote('cd {pwd} > /dev/null 2>&1 ; {local_command}'
-                                            .format(pwd=os.getcwd(), local_command=command)))
+            local_command = quote('cd {pwd} > /dev/null 2>&1 ; {command}'
+                                  .format(pwd=os.getcwd(), command=command))
+            command = get_remote_command(local_command,
+                                         host=host_name,
+                                         port=settings.ssh_port,
+                                         identity_file=settings.ssh_identity_file)
 
         if settings.verbose:
             print(command)
@@ -164,7 +163,12 @@ def _exec_command_fn(settings):
             stderr = MultiFile([sys.stderr, stderr_file])
 
         try:
-            exit_code = safe_shell_exec.execute(command, index=index, stdout=stdout, stderr=stderr, events=events)
+            exit_code = safe_shell_exec.execute(command,
+                                                index=index,
+                                                stdout=stdout,
+                                                stderr=stderr,
+                                                events=events,
+                                                prefix_output_with_timestamp=settings.prefix_output_with_timestamp)
             if exit_code != 0:
                 print('Process {idx} exit with status code {ec}.'.format(idx=index, ec=exit_code))
         except Exception as e:
@@ -180,22 +184,29 @@ def _exec_command_fn(settings):
 
     return _exec_command
 
+def create_run_env_vars(server_ip, nics, port, elastic=False):
+    run_envs = {
+        'HOROVOD_GLOO_RENDEZVOUS_ADDR': server_ip,
+        'HOROVOD_GLOO_RENDEZVOUS_PORT': port,
+        'HOROVOD_CONTROLLER': "gloo",
+        'HOROVOD_CPU_OPERATIONS': "gloo",
+        'HOROVOD_GLOO_IFACE': list(nics)[0],   # TODO: add multiple ifaces in future
+        'NCCL_SOCKET_IFNAME': ','.join(nics),
+    }
+    if elastic:
+        run_envs["HOROVOD_ELASTIC"] = "1"
+    return run_envs
+
+
 
 def get_run_command(command, server_ip, nics, port, elastic=False):
+    env_vars = create_run_env_vars(server_ip, nics, port, elastic)
+    env_string = " ".join(
+        [f"{k}={str(v)}" for k, v in env_vars.items()])
     run_command = (
-        'HOROVOD_GLOO_RENDEZVOUS_ADDR={addr} '
-        'HOROVOD_GLOO_RENDEZVOUS_PORT={port} '
-        'HOROVOD_CONTROLLER=gloo '
-        'HOROVOD_CPU_OPERATIONS=gloo '
-        'HOROVOD_GLOO_IFACE={iface} '
-        'NCCL_SOCKET_IFNAME={nics} '
-        '{elastic}'
+        '{env_string} '
         '{command}'  # expect a lot of environment variables
-        .format(addr=server_ip,
-                port=port,
-                iface=list(nics)[0],  # TODO: add multiple ifaces in future
-                nics=','.join(nics),
-                elastic='HOROVOD_ELASTIC=1 ' if elastic else '',
+        .format(env_string=env_string,
                 command=' '.join(quote(par) for par in command)))
     return run_command
 
@@ -293,6 +304,7 @@ def launch_gloo_elastic(command, exec_command, settings, env, get_common_interfa
 
     event = register_shutdown_event()
     run_command = get_run_command(command, server_ip, nics, global_rendezv_port, elastic=True)
+
     create_worker = _create_elastic_worker_fn(exec_command, run_command, env, event)
 
     driver.start(settings.num_proc, create_worker)

@@ -24,6 +24,8 @@ import tensorflow as tf
 from distutils.version import LooseVersion
 
 from horovod.spark.common import constants
+from horovod.spark.common.store import DBFSLocalStore
+from horovod.spark.common.util import _get_assigned_gpu_or_default
 from horovod.runner.common.util import codec
 
 
@@ -38,6 +40,7 @@ def RemoteTrainer(estimator, metadata, keras_utils, run_id, dataset_idx):
     feature_columns = estimator.getFeatureCols()
     user_callbacks = estimator.getCallbacks()
     batch_size = estimator.getBatchSize()
+    val_batch_size = estimator.getValBatchSize() if estimator.getValBatchSize() else batch_size
     epochs = estimator.getEpochs()
     train_steps_per_epoch = estimator.getTrainStepsPerEpoch()
     validation_steps_per_epoch = estimator.getValidationStepsPerEpoch()
@@ -46,6 +49,7 @@ def RemoteTrainer(estimator, metadata, keras_utils, run_id, dataset_idx):
     should_validate = estimator.getValidation()
     user_shuffle_buffer_size = estimator.getShufflingBufferSize()
     user_verbose = estimator.getVerbose()
+    checkpoint_callback = estimator.getCheckpointCallback()
 
     # Data reader parameters
     train_reader_worker_count = estimator.getTrainReaderNumWorker()
@@ -54,6 +58,7 @@ def RemoteTrainer(estimator, metadata, keras_utils, run_id, dataset_idx):
     # Model parameters
     input_shapes, output_shapes = estimator.get_model_shapes()
     output_names = estimator.getModel().output_names
+    label_shapes = estimator.getLabelShapes()
 
     # Keras implementation
     keras_module = keras_utils.keras()
@@ -61,8 +66,13 @@ def RemoteTrainer(estimator, metadata, keras_utils, run_id, dataset_idx):
     get_horovod = keras_utils.horovod_fn()
     get_keras = keras_utils.keras_fn()
     make_dataset = keras_utils.make_dataset_fn(
-        feature_columns, label_columns, sample_weight_col, metadata,
-        input_shapes, output_shapes, output_names, batch_size)
+        feature_columns=feature_columns,
+        label_columns=label_columns,
+        sample_weight_col=sample_weight_col,
+        metadata=metadata,
+        input_shapes=input_shapes,
+        label_shapes=label_shapes if label_shapes else output_shapes,
+        output_names=output_names)
     fit = keras_utils.fit_fn(epochs)
     transformation_fn = estimator.getTransformationFn()
     transformation = transformation_fn if transformation_fn else None
@@ -74,6 +84,7 @@ def RemoteTrainer(estimator, metadata, keras_utils, run_id, dataset_idx):
 
     # Storage
     store = estimator.getStore()
+    is_dbfs = isinstance(store, DBFSLocalStore)
     remote_store = store.to_remote(run_id, dataset_idx)
 
     def SyncCallback(root_path, sync_to_store_fn, keras):
@@ -89,7 +100,7 @@ def RemoteTrainer(estimator, metadata, keras_utils, run_id, dataset_idx):
 
     def train(serialized_model, train_rows, val_rows, avg_row_size):
         from petastorm import TransformSpec, make_reader, make_batch_reader
-
+        import horovod as _horovod
         k = get_keras()
         k.backend.set_floatx(floatx)
 
@@ -109,8 +120,8 @@ def RemoteTrainer(estimator, metadata, keras_utils, run_id, dataset_idx):
                 serialized_model, lambda x: hvd.load_model(x))
 
         # Horovod: adjust learning rate based on number of processes.
-        k.backend.set_value(model.optimizer.lr,
-                            k.backend.get_value(model.optimizer.lr) * hvd.size())
+        scaled_lr = k.backend.get_value(model.optimizer.lr) * hvd.size()
+        k.backend.set_value(model.optimizer.lr, scaled_lr)
 
         # Verbose mode 1 will print a progress bar
         verbose = user_verbose if hvd.rank() == 0 else 0
@@ -118,6 +129,11 @@ def RemoteTrainer(estimator, metadata, keras_utils, run_id, dataset_idx):
         transform_spec = None
         if transformation:
             transform_spec = TransformSpec(transformation)
+
+        # The inital_lr needs to be set to scaled learning rate in the checkpointing callbacks.
+        for callback in user_callbacks:
+            if isinstance(callback, _horovod._keras.callbacks.LearningRateScheduleCallbackImpl):
+                callback.initial_lr = scaled_lr
 
         with remote_store.get_local_output_dir() as run_output_dir:
             callbacks = [
@@ -140,14 +156,24 @@ def RemoteTrainer(estimator, metadata, keras_utils, run_id, dataset_idx):
                 ckpt_file = os.path.join(run_output_dir, remote_store.checkpoint_filename)
                 logs_dir = os.path.join(run_output_dir, remote_store.logs_subdir)
 
-                callbacks.append(k.callbacks.ModelCheckpoint(ckpt_file))
-                if remote_store.saving_runs:
-                    tensorboard_kwargs = {}
-                    if LooseVersion('1.15.0') > LooseVersion(tf.__version__) >= LooseVersion('1.14.0'):
-                        # Workaround bug in TF 1.14.0: https://github.com/tensorflow/tensorflow/issues/31451
-                        tensorboard_kwargs['profile_batch'] = 0
+                # This callback checkpoints the model that ultimately is wrapped and returned after
+                # Estimator.fit is called.
+                _checkpoint_callback = checkpoint_callback
+                if _checkpoint_callback:
+                    _checkpoint_callback.filepath = ckpt_file
+                else:
+                    if is_dbfs and LooseVersion(tf.__version__) < LooseVersion("2.0.0"):
+                        # Because DBFS local file APIs does not support random write which is
+                        # required by h5 format, save_weights_only=True is needed for switching
+                        # to the TensorFlow SavedModel format.
+                        _checkpoint_callback = k.callbacks.ModelCheckpoint(ckpt_file,
+                                                                           save_weights_only=True)
+                    else:
+                        _checkpoint_callback = k.callbacks.ModelCheckpoint(ckpt_file)
+                callbacks.append(_checkpoint_callback)
 
-                    callbacks.append(k.callbacks.TensorBoard(logs_dir, **tensorboard_kwargs))
+                if remote_store.saving_runs:
+                    callbacks.append(k.callbacks.TensorBoard(logs_dir))
                     callbacks.append(SyncCallback(run_output_dir, remote_store.sync, k))
 
             if train_steps_per_epoch is None:
@@ -156,10 +182,10 @@ def RemoteTrainer(estimator, metadata, keras_utils, run_id, dataset_idx):
                 steps_per_epoch = train_steps_per_epoch
 
             if validation_steps_per_epoch is None:
-                # math.ceil because if val_rows is smaller than batch_size we still get the at least
-                # one step. float(val_rows) because val_rows/batch_size evaluates to zero before
+                # math.ceil because if val_rows is smaller than val_batch_size we still get the at least
+                # one step. float(val_rows) because val_rows/val_batch_size evaluates to zero before
                 # math.ceil
-                validation_steps = int(math.ceil(float(val_rows) / batch_size / hvd.size())) \
+                validation_steps = int(math.ceil(float(val_rows) / val_batch_size / hvd.size())) \
                     if should_validate else None
             else:
                 validation_steps = validation_steps_per_epoch
@@ -207,9 +233,9 @@ def RemoteTrainer(estimator, metadata, keras_utils, run_id, dataset_idx):
                                     **reader_factory_kwargs) \
                     if should_validate else empty_batch_reader() as val_reader:
 
-                    train_data = make_dataset(train_reader, shuffle_buffer_size,
+                    train_data = make_dataset(train_reader, batch_size, shuffle_buffer_size,
                                               is_batch_reader, shuffle=True)
-                    val_data = make_dataset(val_reader, shuffle_buffer_size,
+                    val_data = make_dataset(val_reader, val_batch_size, shuffle_buffer_size,
                                             is_batch_reader, shuffle=False) \
                         if val_reader else None
 
@@ -222,8 +248,19 @@ def RemoteTrainer(estimator, metadata, keras_utils, run_id, dataset_idx):
             globals()['_DATASET_FINALIZATION_HACK'] = model
 
             if hvd.rank() == 0:
-                with open(ckpt_file, 'rb') as f:
-                    return history.history, codec.dumps_base64(f.read()), hvd.size()
+                if is_dbfs:
+                    if LooseVersion(tf.__version__) < LooseVersion("2.0.0"):
+                        model.load_weights(ckpt_file)
+                    else:
+                        # needs to be deserialized in the with scope
+                        with k.utils.custom_object_scope(custom_objects):
+                            model = k.models.load_model(ckpt_file)
+                    serialized_model = keras_utils.serialize_model(model)
+                else:
+                    with open(ckpt_file, 'rb') as f:
+                        serialized_model = codec.dumps_base64(f.read())
+
+                return history.history, serialized_model, hvd.size()
     return train
 
 
@@ -290,7 +327,8 @@ def _pin_gpu_tensorflow2_fn():
         for gpu in gpus:
             tf.config.experimental.set_memory_growth(gpu, True)
         if gpus:
-            tf.config.experimental.set_visible_devices(gpus[hvd.local_rank()], 'GPU')
+            tf.config.experimental.set_visible_devices(
+                gpus[_get_assigned_gpu_or_default(default=hvd.local_rank())], 'GPU')
     return fn
 
 
@@ -298,7 +336,8 @@ def _pin_gpu_tensorflow1_fn():
     def fn(hvd, tf, keras):
         config = tf.ConfigProto()
         config.gpu_options.allow_growth = True
-        config.gpu_options.visible_device_list = str(hvd.local_rank())
+        config.gpu_options.visible_device_list = \
+            str(_get_assigned_gpu_or_default(default=hvd.local_rank()))
         keras.backend.set_session(tf.Session(config=config))
     return fn
 

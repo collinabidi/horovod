@@ -1,5 +1,6 @@
 // Copyright 2016 The TensorFlow Authors. All Rights Reserved.
 // Modifications copyright (C) 2019 Uber Technologies, Inc.
+// Modifications copyright (C) 2020, NVIDIA CORPORATION. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -147,9 +148,12 @@ Status NCCLAllreduce::Execute(std::vector<TensorTableEntry>& entries,
     buffer_len = (size_t) first_entry.output->size();
   }
 
-  int64_t num_elements = 0;
-  for (auto& e : entries) {
-    num_elements += e.tensor->shape().num_elements();
+  int64_t num_elements = buffer_len / DataType_Size(first_entry.tensor->dtype());
+
+  if (response.prescale_factor() != 1.0) {
+    // Execute prescaling op
+    ScaleBuffer(response.prescale_factor(), entries, fused_input_data, buffer_data, num_elements);
+    fused_input_data = buffer_data; // for unfused, scale is done out of place
   }
 
   // Do allreduce.
@@ -160,6 +164,11 @@ Status NCCLAllreduce::Execute(std::vector<TensorTableEntry>& entries,
   nccl_context_->ErrorCheck("ncclAllReduce", nccl_result, *nccl_op_context_.nccl_comm_);
   if (global_state_->timeline.Initialized()) {
     gpu_context_->RecordEvent(gpu_op_context_.event_queue, NCCL_ALLREDUCE, *gpu_op_context_.stream);
+  }
+
+  if (response.postscale_factor() != 1.0) {
+    // Execute postscaling op
+    ScaleBuffer(response.postscale_factor(), entries, buffer_data, buffer_data, num_elements);
   }
 
   // Copy memory out of the fusion buffer.
@@ -209,9 +218,12 @@ NCCLHierarchicalAllreduce::Execute(std::vector<TensorTableEntry>& entries,
     buffer_len = (size_t) first_entry.output->size();
   }
 
-  int64_t num_elements = 0;
-  for (auto& e : entries) {
-    num_elements += e.tensor->shape().num_elements();
+  int64_t num_elements = buffer_len / DataType_Size(first_entry.tensor->dtype());
+
+  if (response.prescale_factor() != 1.0) {
+    // Execute prescaling op
+    ScaleBuffer(response.prescale_factor(), entries, fused_input_data, buffer_data, num_elements);
+    fused_input_data = buffer_data; // for unfused, scale is done out of place
   }
 
   // Do allreduce.
@@ -359,6 +371,11 @@ NCCLHierarchicalAllreduce::Execute(std::vector<TensorTableEntry>& entries,
     }
   }
 
+  if (response.postscale_factor() != 1.0) {
+    // Execute postscaling op
+    ScaleBuffer(response.postscale_factor(), entries, buffer_data, buffer_data, num_elements);
+  }
+
   // Copy memory out of the fusion buffer.
   if (entries.size() > 1) {
     MemcpyOutFusionBuffer(buffer_data, entries);
@@ -481,7 +498,11 @@ Status NCCLAllgather::Execute(std::vector<TensorTableEntry>& entries,
     for (int rc = 1; rc < global_size; ++rc) {
       if (tensor_sizes[ec * global_size + rc] != tensor_sizes[ec * global_size]) {
         same_shape = false;
+        break;
       }
+    }
+    if (same_shape == false) {
+      break;
     }
   }
 
@@ -541,6 +562,60 @@ bool NCCLAllgather::Enabled(const ParameterManager& param_manager,
                               const std::vector<TensorTableEntry>& entries,
                               const Response& response) const {
   return entries[0].device != CPU_DEVICE_ID;
+}
+
+Status NCCLAlltoall::Execute(std::vector<TensorTableEntry>& entries,
+                             const Response& response) {
+#ifdef NCCL_P2P_SUPPORTED
+  assert(entries.size() == 1);
+  auto e = entries[0];
+
+  gpu_op_context_.InitGPU(entries);
+  nccl_op_context_.InitNCCLComm(entries, response.devices());
+  gpu_op_context_.InitGPUQueue(entries, response);
+
+  std::vector<int32_t> sdispls, rdispls;
+  std::vector<int32_t> sendcounts, recvcounts;
+  Status status = PrepareOutputAndParams(e, sdispls, rdispls, sendcounts, recvcounts);
+  if (!status.ok()) {
+    return status;
+  }
+
+  auto world_size = global_state_->controller->GetSize();
+  const void* sendbuf = e.tensor->data();
+  void* buffer_data = (void*) e.output->data();
+
+  nccl_context_->ErrorCheck("ncclGroupStart", ncclGroupStart(), *nccl_op_context_.nccl_comm_);
+
+  for (int i = 0; i < world_size; ++i) {
+    if (recvcounts[i] > 0) {
+      auto nccl_result = ncclRecv((uint8_t*) e.output->data() + rdispls[i] * DataType_Size(e.tensor->dtype()),
+                                  recvcounts[i] * DataType_Size(e.tensor->dtype()), ncclChar, i,
+                                  *nccl_op_context_.nccl_comm_, *gpu_op_context_.stream);
+      nccl_context_->ErrorCheck("ncclRecv", nccl_result, *nccl_op_context_.nccl_comm_);
+    }
+
+    if (sendcounts[i] > 0) {
+      auto nccl_result = ncclSend((uint8_t*) e.tensor->data() + sdispls[i] * DataType_Size(e.tensor->dtype()),
+                             sendcounts[i] * DataType_Size(e.tensor->dtype()), ncclChar, i,
+                             *nccl_op_context_.nccl_comm_, *gpu_op_context_.stream);
+      nccl_context_->ErrorCheck("ncclSend", nccl_result, *nccl_op_context_.nccl_comm_);
+    }
+  }
+  nccl_context_->ErrorCheck("ncclGroupEnd", ncclGroupEnd(), *nccl_op_context_.nccl_comm_);
+
+  if (global_state_->timeline.Initialized()) {
+    gpu_context_->RecordEvent(gpu_op_context_.event_queue, NCCL_ALLTOALL, *gpu_op_context_.stream);
+  }
+
+  return gpu_op_context_.FinalizeGPUQueue(entries);
+#else
+  throw std::runtime_error("NCCLAlltoall requires NCCL version >= 2.7.0. If your NCCL installation cannot be updated "
+                           "and you installed with HOROVOD_GPU_OPERATIONS=NCCL, reinstall with only supported "
+                           "operations individually specified (i.e. HOROVOD_GPU_ALLREDUCE=NCCL HOROVOD_GPU_BROADCAST=NCCL "
+                           "HOROVOD_GPU_ALLGATHER=NCCL). Otherwise, exclude HOROVOD_GPU_ALLTOALL=NCCL from your "
+                           "installation command.");
+#endif
 }
 
 } // namespace common

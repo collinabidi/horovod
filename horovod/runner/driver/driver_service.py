@@ -24,6 +24,7 @@ from horovod.runner.common.service import driver_service
 from horovod.runner.common.util import codec, safe_shell_exec
 from horovod.runner.task import task_service
 from horovod.runner.util import cache, lsf, network, threads
+from horovod.runner.util.remote import get_remote_command
 
 
 class HorovodRunDriverService(driver_service.BasicDriverService):
@@ -88,36 +89,24 @@ def _launch_task_servers(all_host_names, local_host_names, driver_addresses,
             host_output.close()
         return exit_code
 
-    if settings.ssh_port:
-        ssh_port_arg = '-p {ssh_port}'.format(ssh_port=settings.ssh_port)
-    else:
-        ssh_port_arg = ''
     args_list = []
     num_hosts = len(all_host_names)
     for index in range(num_hosts):
         host_name = all_host_names[index]
-        if host_name in local_host_names:
-            command = \
-                '{python} -m horovod.runner.task_fn {index} {num_hosts} ' \
-                '{driver_addresses} {settings}'\
-                .format(python=sys.executable,
-                        index=codec.dumps_base64(index),
-                        num_hosts=codec.dumps_base64(num_hosts),
-                        driver_addresses=codec.dumps_base64(driver_addresses),
-                        settings=codec.dumps_base64(settings))
-        else:
-            command = \
-                'ssh -o PasswordAuthentication=no -o StrictHostKeyChecking=no ' \
-                '{host} {ssh_port_arg} ' \
-                '\'{python} -m horovod.runner.task_fn {index} {num_hosts} ' \
-                '{driver_addresses} {settings}\''\
-                .format(host=host_name,
-                        ssh_port_arg=ssh_port_arg,
-                        python=sys.executable,
-                        index=codec.dumps_base64(index),
-                        num_hosts=codec.dumps_base64(num_hosts),
-                        driver_addresses=codec.dumps_base64(driver_addresses),
-                        settings=codec.dumps_base64(settings))
+        command = \
+            '{python} -m horovod.runner.task_fn {index} {num_hosts} ' \
+            '{driver_addresses} {settings}' \
+            .format(python=sys.executable,
+                    index=codec.dumps_base64(index),
+                    num_hosts=codec.dumps_base64(num_hosts),
+                    driver_addresses=codec.dumps_base64(driver_addresses),
+                    settings=codec.dumps_base64(settings))
+        if host_name not in local_host_names:
+            command = get_remote_command(command,
+                                         host=host_name,
+                                         port=settings.ssh_port,
+                                         identity_file=settings.ssh_identity_file)
+
         if settings.verbose >= 2:
             print('Launching horovod task function: {}'.format(command))
         args_list.append([command])
@@ -129,6 +118,44 @@ def _launch_task_servers(all_host_names, local_host_names, driver_addresses,
     threads.execute_function_multithreaded(_exec_command,
                                            args_list,
                                            block_until_all_done=False)
+
+def _run_probe(driver, settings, num_hosts):
+       # wait for all the hosts to register with the service service.
+    if settings.verbose >= 2:
+        print('Waiting for the hosts to acknowledge.')
+    driver.wait_for_initial_registration(settings.start_timeout)
+    tasks = [
+        task_service.HorovodRunTaskClient(
+            index,
+            driver.task_addresses_for_driver(index),
+            settings.key,
+            settings.verbose) for index in range(
+            num_hosts)]
+    # Notify all the drivers that the initial registration is complete.
+    for task in tasks:
+        task.notify_initial_registration_complete()
+    if settings.verbose >= 2:
+        print('Notified all the hosts that the registration is complete.')
+    # Each worker should probe the interfaces of the next worker in a ring
+    # manner and filter only the routed ones -- it should filter out
+    # interfaces that are not really connected to any external networks
+    # such as lo0 with address 127.0.0.1.
+    if settings.verbose >= 2:
+        print('Waiting for hosts to perform host-to-host interface checking.')
+    driver.wait_for_task_to_task_address_updates(settings.start_timeout)
+    if settings.verbose >= 2:
+        print('Host-to-host interface checking successful.')
+    # Determine a set of common interfaces for task-to-task communication.
+    nics = set(driver.task_addresses_for_tasks(0).keys())
+    for index in range(1, num_hosts):
+        nics.intersection_update(
+            driver.task_addresses_for_tasks(index).keys())
+    if not nics:
+        raise Exception(
+            'Unable to find a set of common task-to-task communication interfaces: %s'
+            % [(index, driver.task_addresses_for_tasks(index))
+               for index in range(num_hosts)])
+    return nics
 
 
 @cache.use_cache()
@@ -161,44 +188,31 @@ def _driver_fn(all_host_names, local_host_names, settings):
     if settings.verbose >= 2:
         print('Attempted to launch horovod task servers.')
     try:
-        # wait for all the hosts to register with the service service.
-        if settings.verbose >= 2:
-            print('Waiting for the hosts to acknowledge.')
-        driver.wait_for_initial_registration(settings.start_timeout)
-        tasks = [
-            task_service.HorovodRunTaskClient(
-                index,
-                driver.task_addresses_for_driver(index),
-                settings.key,
-                settings.verbose) for index in range(
-                num_hosts)]
-        # Notify all the drivers that the initial registration is complete.
-        for task in tasks:
-            task.notify_initial_registration_complete()
-        if settings.verbose >= 2:
-            print('Notified all the hosts that the registration is complete.')
-        # Each worker should probe the interfaces of the next worker in a ring
-        # manner and filter only the routed ones -- it should filter out
-        # interfaces that are not really connected to any external networks
-        # such as lo0 with address 127.0.0.1.
-        if settings.verbose >= 2:
-            print('Waiting for hosts to perform host-to-host interface checking.')
-        driver.wait_for_task_to_task_address_updates(settings.start_timeout)
-        if settings.verbose >= 2:
-            print('Host-to-host interface checking successful.')
-        # Determine a set of common interfaces for task-to-task communication.
-        nics = set(driver.task_addresses_for_tasks(0).keys())
-        for index in range(1, num_hosts):
-            nics.intersection_update(
-                driver.task_addresses_for_tasks(index).keys())
-        if not nics:
-            raise Exception(
-                'Unable to find a set of common task-to-task communication interfaces: %s'
-                % [(index, driver.task_addresses_for_tasks(index))
-                   for index in range(num_hosts)])
-        return nics
+        return _run_probe(driver, settings, num_hosts)
     finally:
         driver.shutdown()
+
+def get_local_interfaces(settings):
+    if settings.verbose >= 2:
+        print('All hosts are local, finding the interfaces '
+              'with address 127.0.0.1')
+    # If all the given hosts are local, find the interfaces with address
+    # 127.0.0.1
+    nics = set()
+    for iface, addrs in net_if_addrs().items():
+        if settings.nics and iface not in settings.nics:
+            continue
+        for addr in addrs:
+            if addr.family == AF_INET and addr.address == '127.0.0.1':
+                nics.add(iface)
+                break
+
+    if len(nics) == 0:
+        raise ValueError('No interface is found for address 127.0.0.1.')
+
+    if settings.verbose >= 2:
+        print('Local interface found ' + ' '.join(nics))
+    return nics
 
 
 def get_common_interfaces(settings, all_host_names, remote_host_names=None, fn_cache=None):
@@ -242,23 +256,5 @@ def get_common_interfaces(settings, all_host_names, remote_host_names=None, fn_c
                 print('Common interface found: ' + ' '.join(nics))
 
     else:
-        if settings.verbose >= 2:
-            print('All hosts are local, finding the interfaces '
-                  'with address 127.0.0.1')
-        # If all the given hosts are local, find the interfaces with address
-        # 127.0.0.1
-        nics = set()
-        for iface, addrs in net_if_addrs().items():
-            if settings.nics and iface not in settings.nics:
-                continue
-            for addr in addrs:
-                if addr.family == AF_INET and addr.address == '127.0.0.1':
-                    nics.add(iface)
-                    break
-
-        if len(nics) == 0:
-            raise ValueError('No interface is found for address 127.0.0.1.')
-
-        if settings.verbose >= 2:
-            print('Local interface found ' + ' '.join(nics))
+        nics = get_local_interfaces(settings)
     return nics

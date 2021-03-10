@@ -26,6 +26,7 @@ import tensorflow as tf
 from pyspark import keyword_only
 from pyspark.ml.util import MLWritable, MLReadable
 from pyspark.ml.param.shared import Param, Params
+from pyspark.sql import SparkSession
 
 from horovod.runner.common.util import codec
 
@@ -129,6 +130,7 @@ class KerasEstimator(HorovodEstimator, KerasEstimatorParamsReadable,
                     or validation split (float) giving percent of data to be randomly selected for validation.
         callbacks: Keras callbacks.
         batch_size: Number of rows from the DataFrame per batch.
+        val_batch_size: Number of rows from the DataFrame per batch for validation, if not set, will use batch_size.
         epochs: Number of epochs to train.
         verbose: Verbosity level [0, 2] (default: 1).
         shuffle_buffer_size: Optional size of in-memory shuffle buffer in rows. Allocating a larger buffer size
@@ -160,6 +162,8 @@ class KerasEstimator(HorovodEstimator, KerasEstimatorParamsReadable,
 
     custom_objects = Param(Params._dummy(), 'custom_objects', 'custom objects')
     _keras_pkg_type = Param(Params._dummy(), '_keras_pkg_type', 'keras package type')
+    checkpoint_callback = Param(Params._dummy(), 'checkpoint_callback',
+                                'model checkpointing callback')
 
     @keyword_only
     def __init__(self,
@@ -179,6 +183,7 @@ class KerasEstimator(HorovodEstimator, KerasEstimatorParamsReadable,
                  validation=None,
                  callbacks=None,
                  batch_size=None,
+                 val_batch_size=None,
                  epochs=None,
                  verbose=None,
                  shuffle_buffer_size=None,
@@ -188,13 +193,16 @@ class KerasEstimator(HorovodEstimator, KerasEstimatorParamsReadable,
                  validation_steps_per_epoch=None,
                  transformation_fn=None,
                  train_reader_num_workers=None,
-                 val_reader_num_workers=None):
+                 val_reader_num_workers=None,
+                 label_shapes=None,
+                 checkpoint_callback=None):
 
         super(KerasEstimator, self).__init__()
 
         self._setDefault(optimizer=None,
                          custom_objects={},
-                         _keras_pkg_type=None)
+                         _keras_pkg_type=None,
+                         checkpoint_callback=None)
 
         kwargs = self._input_kwargs
         self.setParams(**kwargs)
@@ -248,13 +256,20 @@ class KerasEstimator(HorovodEstimator, KerasEstimatorParamsReadable,
     def getCustomObjects(self):
         return self.getOrDefault(self.custom_objects)
 
+    def setCheckpointCallback(self, value):
+        return self._set(checkpoint_callback=value)
+
+    def getCheckpointCallback(self):
+        return self.getOrDefault(self.checkpoint_callback)
+
     def _check_metadata_compatibility(self, metadata):
         input_shapes, output_shapes = self.get_model_shapes()
         util.check_shape_compatibility(metadata,
                                        self.getFeatureCols(),
                                        self.getLabelCols(),
                                        input_shapes=input_shapes,
-                                       output_shapes=output_shapes)
+                                       output_shapes=output_shapes,
+                                       label_shapes=self.getLabelShapes())
 
     def get_model_shapes(self):
         model = self.getModel()
@@ -294,8 +309,8 @@ class KerasEstimator(HorovodEstimator, KerasEstimatorParamsReadable,
         if self.getVerbose():
             print('Resuming training from last checkpoint: {}'.format(last_ckpt_path))
 
-        model_bytes = store.read(last_ckpt_path)
-        return codec.dumps_base64(model_bytes)
+        return store.read_serialized_keras_model(
+            last_ckpt_path, self.getModel(), self.getCustomObjects())
 
     def _compile_model(self, keras_utils):
         # Compile the model with all the parameters
@@ -464,6 +479,9 @@ class KerasModel(HorovodModel, KerasEstimatorParamsReadable,
 
         pin_cpu = remote._pin_cpu_fn()
 
+        final_output_schema = util.get_spark_df_output_schema(df.schema, label_cols, output_cols, metadata)
+        final_output_cols = [field.name for field in final_output_schema.fields]
+
         def predict(rows):
             import tensorflow as tf
             from pyspark import Row
@@ -527,6 +545,14 @@ class KerasModel(HorovodModel, KerasEstimatorParamsReadable,
 
                     fields[output_col] = field
 
-                yield Row(**fields)
+                values = [fields[col] for col in final_output_cols]
 
-        return df.rdd.mapPartitions(predict).toDF()
+                yield Row(*values)
+
+        spark0 = SparkSession._instantiatedSession
+
+        pred_rdd = df.rdd.mapPartitions(predict)
+
+        # Use the schema from previous section to construct the final DF with prediction
+        return spark0.createDataFrame(pred_rdd, schema=final_output_schema)
+

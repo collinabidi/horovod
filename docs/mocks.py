@@ -54,6 +54,10 @@ MOCK_MODULES = [
     'pyspark.sql.functions',
     'pyspark.sql.types',
 
+    'ray',
+    'ray.exceptions',
+    'ray.services',
+
     'tensorflow',
     'tensorflow.python',
     'tensorflow.python.framework',
@@ -70,6 +74,7 @@ MOCK_MODULES = [
     'torch.nn.modules.batchnorm',
     'torch.utils',
     'torch.utils.data',
+    'torch.utils.data.distributed',
     'torch.utils.tensorboard',
 
     'mxnet',
@@ -108,6 +113,11 @@ MOCK_TREE = {
                 'batchnorm': {
                     '_BatchNorm': MagicMock,
                 }
+            },
+        },
+        'utils': {
+            'data': {
+                'Sampler': MagicMock,
             },
         },
     },

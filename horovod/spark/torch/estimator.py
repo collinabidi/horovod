@@ -21,8 +21,9 @@ import numbers
 import time
 
 from pyspark import keyword_only
-from pyspark.ml.param.shared import Param, Params
+from pyspark.ml.param.shared import Param, Params, TypeConverters
 from pyspark.ml.util import MLWritable, MLReadable
+from pyspark.sql import SparkSession
 
 from horovod.runner.common.util import codec
 from horovod.spark.common import util
@@ -40,13 +41,16 @@ import torch.utils.data
 
 
 def _torch_param_serialize(param_name, param_val):
+    if param_val is None:
+        return None
+
     if param_name in [EstimatorParams.backend.name, EstimatorParams.store.name]:
         # We do not serialize backend and store. These params have to be regenerated for each
         # run of the pipeline
         return None
-
-    if param_val is None:
-        return None
+    elif param_name == EstimatorParams.model.name:
+        serialize = serialize_fn()
+        return serialize(param_val)
 
     return codec.dumps_base64(param_val)
 
@@ -69,6 +73,9 @@ class TorchEstimatorParamsReader(HorovodParamsReader):
         for key, val in dict_values.items():
             if val is None:
                 deserialized_dict[key] = None
+            elif key == EstimatorParams.model.name:
+                deserialize = deserialize_fn()
+                deserialized_dict[key] = deserialize(val)
             else:
                 deserialized_dict[key] = codec.loads_base64(val)
         return deserialized_dict
@@ -105,6 +112,7 @@ class TorchEstimator(HorovodEstimator, TorchEstimatorParamsWritable,
                     or validation split (float) giving percent of data to be randomly selected for validation.
         label_cols: Column names used as labels.  Must be a list with one label for each output of the model.
         batch_size: Number of rows from the DataFrame per batch.
+        val_batch_size: Number of rows from the DataFrame per batch for validation, if not set, will use batch_size.
         epochs: Number of epochs to train.
         verbose: Verbosity level [0, 2] (default: 1).
         shuffle_buffer_size: Optional size of in-memory shuffle buffer in rows. Allocating a larger buffer size
@@ -142,6 +150,10 @@ class TorchEstimator(HorovodEstimator, TorchEstimatorParamsWritable,
     train_minibatch_fn = Param(Params._dummy(), 'train_minibatch_fn',
                                'functions that construct the minibatch train function for torch')
 
+    inmemory_cache_all = Param(Params._dummy(), 'inmemory_cache_all',
+                               'Cache the data in memory for training and validation.',
+                               typeConverter=TypeConverters.toBoolean)
+
     @keyword_only
     def __init__(self,
                  num_proc=None,
@@ -161,6 +173,7 @@ class TorchEstimator(HorovodEstimator, TorchEstimatorParamsWritable,
                  label_cols=None,
                  callbacks=None,
                  batch_size=None,
+                 val_batch_size=None,
                  epochs=None,
                  verbose=1,
                  shuffle_buffer_size=None,
@@ -171,12 +184,16 @@ class TorchEstimator(HorovodEstimator, TorchEstimatorParamsWritable,
                  validation_steps_per_epoch=None,
                  transformation_fn=None,
                  train_reader_num_workers=None,
-                 val_reader_num_workers=None):
+                 val_reader_num_workers=None,
+                 label_shapes=None,
+                 inmemory_cache_all=False):
+
         super(TorchEstimator, self).__init__()
         self._setDefault(loss_constructors=None,
                          input_shapes=None,
                          train_minibatch_fn=None,
-                         transformation_fn=None)
+                         transformation_fn=None,
+                         inmemory_cache_all=False)
 
         kwargs = self._input_kwargs
 
@@ -203,6 +220,12 @@ class TorchEstimator(HorovodEstimator, TorchEstimatorParamsWritable,
     def getLossConstructors(self):
         return self.getOrDefault(self.loss_constructors)
 
+    def setInMemoryCacheAll(self, value):
+        return self._set(inmemory_cache_all=value)
+
+    def getInMemoryCacheAll(self):
+        return self.getOrDefault(self.inmemory_cache_all)
+
     def _get_optimizer(self):
         return self.getOrDefault(self.optimizer)
 
@@ -223,7 +246,8 @@ class TorchEstimator(HorovodEstimator, TorchEstimatorParamsWritable,
         util.check_shape_compatibility(metadata,
                                        self.getFeatureCols(),
                                        self.getLabelCols(),
-                                       input_shapes=self.getInputShapes())
+                                       input_shapes=self.getInputShapes(),
+                                       label_shapes=self.getLabelShapes())
 
     def _fit_on_prepared_data(self, backend, train_rows, val_rows, metadata, avg_row_size, dataset_idx=None):
         self._check_params(metadata)
@@ -277,6 +301,7 @@ class TorchEstimator(HorovodEstimator, TorchEstimatorParamsWritable,
         optimizer = copy.deepcopy(self.getOptimizer())
 
         model.load_state_dict(best_checkpoint['model'])
+        model.eval()
         optimizer.load_state_dict(best_checkpoint['optimizer'])
 
         return self.get_model_class()(**self._get_model_kwargs(
@@ -383,9 +408,11 @@ class TorchModel(HorovodModel, TorchEstimatorParamsWritable, TorchEstimatorParam
 
     # To run locally on OS X, need export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
     def _transform(self, df):
-        model_pre_predict = self.getModel()
-        model_pre_predict.eval()
+        import copy
+        from pyspark.sql.types import StructField, StructType
+        from pyspark.ml.linalg import VectorUDT
 
+        model_pre_predict = self.getModel()
         deserialize = deserialize_fn()
         serialize = serialize_fn()
         serialized_model = serialize(model_pre_predict)
@@ -395,6 +422,8 @@ class TorchModel(HorovodModel, TorchEstimatorParamsWritable, TorchEstimatorParam
         output_cols = self.getOutputCols()
         feature_cols = self.getFeatureColumns()
         metadata = self._get_metadata()
+
+        final_output_cols = util.get_output_cols(df.schema, output_cols)
 
         def predict(rows):
             from pyspark import Row
@@ -442,6 +471,33 @@ class TorchModel(HorovodModel, TorchEstimatorParamsWritable, TorchEstimatorParam
 
                     fields[output_col] = field
 
-                yield Row(**fields)
+                values = [fields[col] for col in final_output_cols]
 
-        return df.rdd.mapPartitions(predict).toDF()
+                yield Row(*values)
+
+        spark0 = SparkSession._instantiatedSession
+
+        final_output_fields = []
+
+        # copy input schema
+        for field in df.schema.fields:
+            final_output_fields.append(copy.deepcopy(field))
+
+        # append output schema
+        override_fields = df.limit(1).rdd.mapPartitions(predict).toDF().schema.fields[-len(output_cols):]
+        for name, override, label in zip(output_cols, override_fields, label_cols):
+            # default data type as label type
+            data_type = metadata[label]['spark_data_type']()
+
+            if type(override.dataType) == VectorUDT:
+                # Override output to vector. This is mainly for torch's classification loss
+                # where label is a scalar but model output is a vector.
+                data_type = VectorUDT()
+            final_output_fields.append(StructField(name=name, dataType=data_type, nullable=True))
+
+        final_output_schema = StructType(final_output_fields)
+
+        pred_rdd = df.rdd.mapPartitions(predict)
+
+        # Use the schema from previous section to construct the final DF with prediction
+        return spark0.createDataFrame(pred_rdd, schema=final_output_schema)

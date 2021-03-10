@@ -20,6 +20,7 @@ import io
 import os
 import sys
 import textwrap
+import warnings
 
 import yaml
 
@@ -39,7 +40,7 @@ from horovod.runner.mpi_run import mpi_run
 from horovod.runner.js_run import js_run, is_jsrun_installed
 from horovod.runner.http.http_client import read_data_from_kvstore, put_data_into_kvstore
 from horovod.runner.http.http_server import KVStoreServer
-
+from horovod.runner.util.remote import get_remote_command
 
 # Cached information of horovod functions be stored in this directory
 CACHE_FOLDER = os.path.join(os.path.expanduser('~'), '.horovod')
@@ -50,9 +51,11 @@ CACHE_STALENESS_THRESHOLD_MINUTES = 60
 # Number of attempts for sshing into the hosts
 SSH_ATTEMPTS = 5
 
+SSH_CONNECT_TIMEOUT_S = 10
+
 
 @cache.use_cache()
-def _check_all_hosts_ssh_successful(host_addresses, ssh_port=None):
+def _check_all_hosts_ssh_successful(host_addresses, ssh_port=None, ssh_identity_file=None):
     """
     checks if ssh can successfully be performed to all the hosts.
     :param host_addresses: list of addresses to ssh into. for example,
@@ -80,14 +83,11 @@ def _check_all_hosts_ssh_successful(host_addresses, ssh_port=None):
                 output.close()
         return exit_code, output_msg
 
-    ssh_port_arg = '-p {ssh_port}'.format(
-        ssh_port=ssh_port) if ssh_port else ''
-
-    ssh_command_format = 'ssh -o PasswordAuthentication=no -o StrictHostKeyChecking=no' \
-                         ' {host} {ssh_port_arg} true'
-
-    args_list = [[ssh_command_format.format(host=host_address,
-                                            ssh_port_arg=ssh_port_arg)]
+    args_list = [[get_remote_command(local_command='true',
+                                     host=host_address,
+                                     port=ssh_port,
+                                     identity_file=ssh_identity_file,
+                                     timeout_s=SSH_CONNECT_TIMEOUT_S)]
                  for host_address in host_addresses]
     ssh_exit_codes = \
         threads.execute_function_multithreaded(exec_command,
@@ -133,7 +133,7 @@ def check_build(verbose):
                version=horovod.__version__,
                tensorflow=get_check(extension_available('tensorflow', verbose=verbose)),
                torch=get_check(extension_available('torch', verbose=verbose)),
-               mxnet = get_check(extension_available('mxnet', verbose=verbose)),
+               mxnet=get_check(extension_available('mxnet', verbose=verbose)),
                mpi=get_check(mpi_built(verbose=verbose)),
                gloo=get_check(gloo_built(verbose=verbose)),
                nccl_ops=get_check(nccl_built(verbose=verbose)),
@@ -213,6 +213,32 @@ def make_override_false_action(override_args):
     return make_override_bool_action(override_args, False)
 
 
+def make_deprecated_bool_action(override_args, bool_value, replacement_option):
+    class StoreOverrideBoolAction(argparse.Action):
+        def __init__(self,
+                     option_strings,
+                     dest,
+                     required=False,
+                     help=None):
+            super(StoreOverrideBoolAction, self).__init__(
+                option_strings=option_strings,
+                dest=dest,
+                const=bool_value,
+                nargs=0,
+                default=None,
+                required=required,
+                help=help)
+
+        def __call__(self, parser, args, values, option_string=None):
+            deprecated_option = '|'.join(self.option_strings)
+            warnings.warn(f'Argument {deprecated_option} has been replaced by {replacement_option} and will be removed in v0.21.0',
+                          DeprecationWarning)
+            override_args.add(self.dest)
+            setattr(args, self.dest, self.const)
+
+    return StoreOverrideBoolAction
+
+
 def parse_args():
     override_args = set()
 
@@ -228,9 +254,6 @@ def parse_args():
 
     parser.add_argument('-cb', '--check-build', action=make_check_build_action(np_arg), nargs=0,
                         help='Shows which frameworks and libraries have been built into Horovod.')
-
-    parser.add_argument('-p', '--ssh-port', action='store', dest='ssh_port',
-                        type=int, help='SSH port on all the hosts.')
 
     parser.add_argument('--disable-cache', action='store_true',
                         dest='disable_cache',
@@ -272,17 +295,23 @@ def parse_args():
                              'Note that this will override any command line arguments provided before '
                              'this argument, and will be overridden by any arguments that come after it.')
 
+    group_ssh = parser.add_argument_group('SSH arguments')
+    group_ssh.add_argument('-p', '--ssh-port', action='store', dest='ssh_port',
+                           type=int, help='SSH port on all the hosts.')
+    group_ssh.add_argument('-i', '--ssh-identity-file', action='store', dest='ssh_identity_file',
+                           help='File on the driver from which the identity (private key) is read.')
+
     group_params = parser.add_argument_group('tuneable parameter arguments')
-    group_params.add_argument('--fusion-threshold-mb', action=make_override_action(override_args),type=int,
+    group_params.add_argument('--fusion-threshold-mb', action=make_override_action(override_args), type=int,
                               help='Fusion buffer threshold in MB. This is the maximum amount of '
                                    'tensor data that can be fused together into a single batch '
                                    'during allreduce / allgather. Setting 0 disables tensor fusion. '
-                                   '(default: 64)')
+                                   '(default: 128)')
     group_params.add_argument('--cycle-time-ms', action=make_override_action(override_args), type=float,
                               help='Cycle time in ms. This is the delay between each tensor fusion '
                                    'cycle. The larger the cycle time, the more batching, but the '
                                    'greater latency between each allreduce / allgather operations. '
-                                   '(default: 5')
+                                   '(default: 1')
     group_params.add_argument('--cache-capacity', action=make_override_action(override_args), type=int,
                               help='Maximum number of tensor names that will be cached to reduce amount '
                                    'of coordination required between workers before performing allreduce / '
@@ -324,24 +353,24 @@ def parse_args():
                                      'score of the trial. The last row will always contain the best value '
                                      'found.')
     group_autotune.add_argument('--autotune-warmup-samples', action=make_override_action(override_args),
-                                type=int, default=3,
+                                type=int,
                                 help='Number of samples to discard before beginning the optimization process '
                                      'during autotuning. Performance during the first few batches can be '
-                                     'affected by initialization and cache warmups. (default: %(default)s)')
+                                     'affected by initialization and cache warmups. (default: 3')
     group_autotune.add_argument('--autotune-steps-per-sample', action=make_override_action(override_args),
-                                type=int, default=10,
+                                type=int,
                                 help='Number of steps (approximate) to record before observing a sample. The sample '
                                      'score is defined to be the median score over all batches within the sample. The '
                                      'more batches per sample, the less variance in sample scores, but the longer '
-                                     'autotuning will take. (default: %(default)s)')
+                                     'autotuning will take. (default: 10')
     group_autotune.add_argument('--autotune-bayes-opt-max-samples', action=make_override_action(override_args),
-                                type=int, default=20,
+                                type=int,
                                 help='Maximum number of samples to collect for each Bayesian optimization process. '
-                                     '(default: %(default)s)')
+                                     '(default: 20')
     group_autotune.add_argument('--autotune-gaussian-process-noise', action=make_override_action(override_args),
-                                type=float, default=0.8,
+                                type=float,
                                 help='Regularization value [0, 1] applied to account for noise in samples. '
-                                     '(default: %(default)s)')
+                                     '(default: 0.8')
 
     group_elastic = parser.add_argument_group('elastic arguments')
     group_elastic.add_argument('--min-np', action='store', dest='min_np', type=int,
@@ -384,12 +413,12 @@ def parse_args():
     group_stall_check_enabled.add_argument('--stall-check', dest='no_stall_check',
                                            action=make_override_false_action(override_args), help=argparse.SUPPRESS)
     group_stall_check.add_argument('--stall-check-warning-time-seconds', action=make_override_action(override_args),
-                                   type=int, default=60,
-                                   help='Seconds until the stall warning is logged to stderr. (default: %(default)s)')
+                                   type=int,
+                                   help='Seconds until the stall warning is logged to stderr. (default: 60')
     group_stall_check.add_argument('--stall-check-shutdown-time-seconds', action=make_override_action(override_args),
-                                   type=int, default=0,
+                                   type=int,
                                    help='Seconds until Horovod is shutdown due to stall. Shutdown will only take '
-                                        'place if this value is greater than the warning time. (default: %(default)s)')
+                                        'place if this value is greater than the warning time. (default: 0')
 
     group_library_options = parser.add_argument_group('library arguments')
     group_mpi_threads_disable = group_library_options.add_mutually_exclusive_group()
@@ -402,35 +431,48 @@ def parse_args():
                                            action=make_override_false_action(override_args), help=argparse.SUPPRESS)
     group_library_options.add_argument('--mpi-args', action='store', dest='mpi_args',
                                        help='Extra MPI arguments to pass to mpirun. '
-                                       'They need to be passed with the equal sign to avoid parsing issues. '
-                                       'e.g. --mpi-args="--map-by ppr:6:node"')
+                                            'They need to be passed with the equal sign to avoid parsing issues. '
+                                            'e.g. --mpi-args="--map-by ppr:6:node"')
     group_library_options.add_argument('--tcp', action='store_true', dest='tcp_flag',
                                        help='If this flag is set, only TCP is used for communication.')
     group_library_options.add_argument('--binding-args', action='store', dest='binding_args',
                                        help='Process binding arguments. Default is socket for Spectrum MPI '
-                                       'and no binding for other cases. e.g. --binding-args="--rankfile myrankfile"')
+                                            'and no binding for other cases. e.g. --binding-args="--rankfile myrankfile"')
     group_library_options.add_argument('--num-nccl-streams', action=make_override_action(override_args),
-                                       type=int, default=1,
+                                       type=int,
                                        help='Number of NCCL streams. Only applies when running with NCCL support. '
                                             '(default: %(default)s)')
-    group_library_options.add_argument('--ccl-bgt-affinity', action=make_override_action(override_args),
-                                       type=int, default=0,
-                                       help='CCL background thread affinity. Only applies when running with CCL '
-                                            'support. (default: %(default)s)')
+    group_library_options.add_argument('--thread-affinity', action=make_override_action(override_args),
+                                       type=int,
+                                       help='Horovod background thread affinity. '
+                                            '(default: 0')
     group_library_options.add_argument('--gloo-timeout-seconds', action=make_override_action(override_args),
-                                       type=int, default=30,
+                                       type=int,
                                        help='Timeout in seconds for Gloo operations to complete. '
-                                            '(default: %(default)s)')
+                                            '(default: 30')
 
     group_logging = parser.add_argument_group('logging arguments')
     group_logging.add_argument('--log-level', action=make_override_action(override_args),
                                choices=config_parser.LOG_LEVELS,
                                help='Minimum level to log to stderr from the Horovod backend. (default: WARNING).')
     group_logging_timestamp = group_logging.add_mutually_exclusive_group()
-    group_logging_timestamp.add_argument('--log-hide-timestamp', action=make_override_true_action(override_args),
-                                         help='Hide the timestamp from Horovod log messages.')
-    group_logging_timestamp.add_argument('--no-log-hide-timestamp', dest='log_hide_timestamp',
-                                         action=make_override_false_action(override_args), help=argparse.SUPPRESS)
+    group_logging_timestamp.add_argument('--log-with-timestamp', 
+                                         action=make_override_true_action(override_args),
+                                         help=argparse.SUPPRESS)
+    group_logging_timestamp.add_argument('--log-without-timestamp', dest='log_with_timestamp',
+                                         action=make_override_false_action(override_args), 
+                                         help='Hide the timestamp from Horovod internal log messages.')
+    group_logging_timestamp.add_argument('-prefix-timestamp', '--prefix-output-with-timestamp', action='store_true',
+                                         dest='prefix_output_with_timestamp',
+                                         help='Timestamp each line of output to stdout, stderr, and stddiag.')
+    group_logging_timestamp.add_argument('--log-hide-timestamp', 
+                                         dest='log_with_timestamp',
+                                         action=make_deprecated_bool_action(override_args, False, '--log-without-timestamp'),
+                                         help=argparse.SUPPRESS)
+    group_logging_timestamp.add_argument('--no-log-hide-timestamp', 
+                                         dest='log_with_timestamp',
+                                         action=make_deprecated_bool_action(override_args, True, '--log-with-timestamp'),
+                                         help=argparse.SUPPRESS)                                     
 
     group_hosts_parent = parser.add_argument_group('host arguments')
     group_hosts = group_hosts_parent.add_mutually_exclusive_group()
@@ -475,6 +517,7 @@ def parse_args():
     config_parser.validate_config_args(args)
 
     args.run_func = None
+    args.executable = None
 
     if args.check_build:
         check_build(args.verbose)
@@ -483,8 +526,6 @@ def parse_args():
 
 
 def _run_static(args):
-    nics_set = set(args.nics.split(',')) if args.nics else None
-
     # horovodrun has to finish all the checks before this timeout runs out.
     if args.start_timeout:
         start_timeout = args.start_timeout
@@ -499,6 +540,7 @@ def _run_static(args):
                                     'parameter if you have too many servers.')
     settings = hvd_settings.Settings(verbose=2 if args.verbose else 0,
                                      ssh_port=args.ssh_port,
+                                     ssh_identity_file=args.ssh_identity_file,
                                      extra_mpi_args=args.mpi_args,
                                      tcp_flag=args.tcp_flag,
                                      binding_args=args.binding_args,
@@ -508,7 +550,8 @@ def _run_static(args):
                                      hosts=args.hosts,
                                      output_filename=args.output_filename,
                                      run_func_mode=args.run_func is not None,
-                                     nics=nics_set)
+                                     nics=args.nics,
+                                     prefix_output_with_timestamp=args.prefix_output_with_timestamp)
 
     # This cache stores the results of checks performed by horovod
     # during the initialization step. It can be disabled by setting
@@ -522,6 +565,8 @@ def _run_static(args):
             params += str(args.hosts) + ' '
         if args.ssh_port:
             params += str(args.ssh_port)
+        if args.ssh_identity_file:
+            params += args.ssh_identity_file
         parameters_hash = hashlib.md5(params.encode('utf-8')).hexdigest()
         fn_cache = cache.Cache(CACHE_FOLDER, CACHE_STALENESS_THRESHOLD_MINUTES,
                                parameters_hash)
@@ -537,7 +582,8 @@ def _run_static(args):
         if settings.verbose >= 2:
             print('Checking ssh on all remote hosts.')
         # Check if we can ssh into all remote hosts successfully.
-        if not _check_all_hosts_ssh_successful(remote_host_names, args.ssh_port, fn_cache=fn_cache):
+        if not _check_all_hosts_ssh_successful(remote_host_names, args.ssh_port, args.ssh_identity_file,
+                                               fn_cache=fn_cache):
             raise RuntimeError('could not connect to some hosts via ssh')
         if settings.verbose >= 2:
             print('SSH was successful into all the remote hosts.')
@@ -553,7 +599,8 @@ def _run_static(args):
         put_data_into_kvstore(driver_ip, run_func_server_port,
                               'runfunc', 'func', args.run_func)
 
-        command = [sys.executable, '-m', 'horovod.runner.run_task', str(driver_ip), str(run_func_server_port)]
+        executable = args.executable or sys.executable
+        command = [executable, '-m', 'horovod.runner.run_task', str(driver_ip), str(run_func_server_port)]
 
         try:
             _launch_job(args, settings, nics, command)
@@ -603,12 +650,14 @@ def _run_elastic(args):
                                                 num_proc=args.np,
                                                 verbose=2 if args.verbose else 0,
                                                 ssh_port=args.ssh_port,
+                                                ssh_identity_file=args.ssh_identity_file,
                                                 extra_mpi_args=args.mpi_args,
                                                 key=secret.make_secret_key(),
                                                 start_timeout=tmout,
                                                 output_filename=args.output_filename,
                                                 run_func_mode=args.run_func is not None,
-                                                nics=args.nics)
+                                                nics=args.nics,
+                                                prefix_output_with_timestamp=args.prefix_output_with_timestamp)
 
     if not gloo_built(verbose=(settings.verbose >= 2)):
         raise ValueError('Gloo support is required to use elastic training, but has not been built.  Ensure CMake is '
@@ -643,8 +692,9 @@ def run_controller(use_gloo, gloo_run, use_mpi, mpi_run, use_jsrun, js_run, verb
             raise ValueError('MPI support has not been built.  If this is not expected, ensure MPI is installed '
                              'and reinstall Horovod with HOROVOD_WITH_MPI=1 to debug the build error.')
         if not lsf.LSFUtils.using_lsf():
-            raise ValueError('Horovod did not detect an LSF job.  The jsrun launcher can only be used in that environment. '
-                             'Please, pick a different launcher for other environments.')
+            raise ValueError(
+                'Horovod did not detect an LSF job.  The jsrun launcher can only be used in that environment. '
+                'Please, pick a different launcher for other environments.')
         js_run()
     else:
         if mpi_built(verbose=verbose):
@@ -700,6 +750,9 @@ def _run(args):
         else:
             # Set hosts to localhost if not specified
             args.hosts = 'localhost:{np}'.format(np=args.np)
+
+    # Convert nics into set
+    args.nics = set(args.nics.split(',')) if args.nics else None
 
     if _is_elastic(args):
         return _run_elastic(args)

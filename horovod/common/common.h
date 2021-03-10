@@ -1,5 +1,6 @@
 // Copyright 2018 Uber Technologies, Inc. All Rights Reserved.
 // Modifications copyright (C) 2019 Intel Corporation
+// Modifications copyright (C) 2020, NVIDIA CORPORATION. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -48,15 +49,18 @@ namespace common {
 #define NCCL_ALLREDUCE "NCCL_ALLREDUCE"
 #define MEMCPY_OUT_FUSION_BUFFER "MEMCPY_OUT_FUSION_BUFFER"
 #define MPI_BCAST "MPI_BCAST"
+#define MPI_ALLTOALL "MPI_ALLTOALL"
 #define NCCL_REDUCESCATTER "NCCL_REDUCESCATTER"
 #define NCCL_ALLGATHER "NCCL_ALLGATHER"
 #define NCCL_REDUCE "NCCL_REDUCE"
 #define NCCL_BCAST "NCCL_BCAST"
+#define NCCL_ALLTOALL "NCCL_ALLTOALL"
 #define COPY_ALLGATHER_OUTPUT "COPY_ALLGATHER_OUTPUT"
 #define ALLOCATE_SHARED_BUFFER "ALLOCATE_SHARED_BUFFER"
 #define CCL_ALLREDUCE "CCL_ALLREDUCE"
 #define CCL_ALLGATHER "CCL_ALLGATHER"
 #define CCL_BCAST "CCL_BCAST"
+#define CCL_ALLTOALL "CCL_ALLTOALL"
 #define GLOO_ALLREDUCE "GLOO_ALLREDUCE"
 #define GLOO_ALLGATHER "GLOO_ALLGATHER"
 #define GLOO_BCAST "GLOO_BCAST"
@@ -83,10 +87,11 @@ namespace common {
 #define HOROVOD_HIERARCHICAL_ALLREDUCE "HOROVOD_HIERARCHICAL_ALLREDUCE"
 #define HOROVOD_HIERARCHICAL_ALLGATHER "HOROVOD_HIERARCHICAL_ALLGATHER"
 #define HOROVOD_CACHE_CAPACITY "HOROVOD_CACHE_CAPACITY"
-#define HOROVOD_CCL_BGT_AFFINITY "HOROVOD_CCL_BGT_AFFINITY"
+#define HOROVOD_BATCH_D2D_MEMCOPIES "HOROVOD_BATCH_D2D_MEMCOPIES"
 #define HOROVOD_NUM_NCCL_STREAMS "HOROVOD_NUM_NCCL_STREAMS"
 #define HOROVOD_CPU_OPERATIONS "HOROVOD_CPU_OPERATIONS"
 #define HOROVOD_CONTROLLER "HOROVOD_CONTROLLER"
+#define HOROVOD_CCL_CACHE "HOROVOD_CCL_CACHE"
 #define HOROVOD_GLOO_IFACE "HOROVOD_GLOO_IFACE"
 #define HOROVOD_MPI "MPI"
 #define HOROVOD_CCL "CCL"
@@ -94,6 +99,7 @@ namespace common {
 #define HOROVOD_SHMEM "SHMEM"
 #define HOROVOD_ADASUM_MPI_CHUNK_SIZE "HOROVOD_ADASUM_MPI_CHUNK_SIZE"
 #define HOROVOD_THREAD_AFFINITY "HOROVOD_THREAD_AFFINITY"
+#define HOROVOD_DISABLE_GROUP_FUSION "HOROVOD_DISABLE_GROUP_FUSION"
 
 // String constant for gloo interface.
 #define GLOO_DEFAULT_IFACE ""
@@ -229,6 +235,14 @@ public:
                      std::shared_ptr<PersistentBuffer>* tensor) = 0;
   virtual Status AllocateOutput(TensorShape shape,
                                 std::shared_ptr<Tensor>* tensor) = 0;
+  virtual Status AllocateOutput(int output_index, TensorShape shape,
+                                std::shared_ptr<Tensor>* tensor) {
+    if (output_index == 0) {
+      return AllocateOutput(shape, tensor);
+    } else {
+      throw std::logic_error("output_index != 0 not supported");
+    }
+  }
   virtual Status AllocateZeros(int64_t num_elements, DataType dtype,
                                 std::shared_ptr<Tensor>* tensor) = 0;
   virtual Framework framework() const = 0;
@@ -259,11 +273,19 @@ struct TensorTableEntry {
   int device = CPU_DEVICE_ID;
   // A callback to call with the status.
   StatusCallback callback;
+
+  // Alltoall splits (if tensor is for an Alltoall operation)
+  // Note: splits are stored in TensorTableEntry to avoid N^2
+  // storage complexity of collecting all worker split arrays
+  // on coordinator rank.
+  std::vector<int32_t> splits;
+  std::shared_ptr<Tensor> received_splits;
 };
 using TensorTable = std::unordered_map<std::string, TensorTableEntry>;
 
 // Set affinity function
-void server_affinity_set(int affinity);
+void set_affinity(int affinity);
+void parse_and_set_affinity(const char* affinity, int local_size, int local_rank);
 
 } // namespace common
 } // namespace horovod

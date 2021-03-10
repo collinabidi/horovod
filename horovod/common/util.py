@@ -15,6 +15,7 @@
 # limitations under the License.
 # =============================================================================
 
+import json
 import multiprocessing
 import os
 import sys
@@ -22,6 +23,8 @@ import sysconfig
 import warnings
 
 from contextlib import contextmanager
+
+from horovod.common.exceptions import get_version_mismatch_message, HorovodVersionMismatchError
 
 
 EXTENSIONS = ['tensorflow', 'torch', 'mxnet']
@@ -138,7 +141,7 @@ def mpi_built(verbose=False):
             ext_base_name, built_fn, 'built with MPI', verbose)
         if result is not None:
             return result
-    return False
+    return None
 
 
 @_cache
@@ -149,9 +152,7 @@ def gloo_built(verbose=False):
             ext_base_name, built_fn, 'built with Gloo', verbose)
         if result is not None:
             return result
-    raise RuntimeError('Failed to determine if Gloo support has been built. '
-                       'Run again with --verbose for more details.')
-
+    return None
 
 @_cache
 def nccl_built(verbose=False):
@@ -161,9 +162,7 @@ def nccl_built(verbose=False):
             ext_base_name, built_fn, 'built with NCCL', verbose)
         if result is not None:
             return result
-    raise RuntimeError('Failed to determine if NCCL support has been built. '
-                       'Run again with --verbose for more details.')
-
+    return None
 
 @_cache
 def ddl_built(verbose=False):
@@ -173,9 +172,7 @@ def ddl_built(verbose=False):
             ext_base_name, built_fn, 'built with DDL', verbose)
         if result is not None:
             return result
-    raise RuntimeError('Failed to determine if DDL support has been built. '
-                       'Run again with --verbose for more details.')
-
+    return None
 
 @_cache
 def ccl_built(verbose=False):
@@ -187,6 +184,7 @@ def ccl_built(verbose=False):
             return result
     raise RuntimeError('Failed to determine if CCL support has been built. '
                        'Run again with --verbose for more details.')
+    return None
 
 @_cache
 def shmem_built(verbose=False):
@@ -198,7 +196,7 @@ def shmem_built(verbose=False):
             return result
     raise RuntimeError('Failed to determine if SHMEM support has been built. '
                        'Run again with --verbose for more details.')
-
+    return None
 
 @contextmanager
 def env(**kwargs):
@@ -255,3 +253,22 @@ def num_rank_is_power_2(num_rank):
     TODO support non-power of 2 ranks.
     """
     return num_rank != 0 and ((num_rank & (num_rank -1)) == 0)
+
+def split_list(l, n):
+    """
+    Splits list l into n approximately even sized chunks.
+    """
+    d, r = divmod(len(l), n)
+    return [l[i * d + min(i, r):(i + 1) * d + min(i + 1, r)] for i in range(n)]
+
+
+def check_installed_version(name, version, exception=None):
+    file_path = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),\
+        os.pardir, "metadata.json"))
+    with open(file_path) as f:
+        installed_version = json.load(f).get(name)
+        if installed_version != version:
+            if exception is None:
+                warnings.warn(get_version_mismatch_message(name, version, installed_version))
+            else:
+                raise HorovodVersionMismatchError(name, version, installed_version) from exception

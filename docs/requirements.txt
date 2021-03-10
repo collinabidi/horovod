@@ -1,4 +1,4 @@
-git+https://github.com/sphinx-doc/sphinx@2.x
+sphinx>=3
 sphinxcontrib-napoleon
 alabaster
 nbsphinx

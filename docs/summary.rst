@@ -6,6 +6,14 @@
 Horovod
 =======
 
+.. raw:: html
+
+   <div align="center">
+
+.. image:: https://badge.fury.io/py/horovod.svg
+   :target: https://badge.fury.io/py/horovod
+   :alt: PyPI Version
+
 .. image:: https://badge.buildkite.com/6f976bc161c69d9960fc00de01b69deb6199b25680a09e5e26.svg?branch=master
    :target: https://buildkite.com/horovod/horovod
    :alt: Build Status
@@ -13,6 +21,18 @@ Horovod
 .. image:: https://readthedocs.org/projects/horovod/badge/?version=latest
    :target: https://horovod.readthedocs.io/en/latest/
    :alt: Documentation Status
+
+.. image:: https://img.shields.io/badge/slack-chat-green.svg?logo=slack
+   :target: https://forms.gle/cPGvty5hp31tGfg79
+   :alt: Slack
+
+.. raw:: html
+
+   </div>
+
+.. raw:: html
+
+   <div align="center">
 
 .. image:: https://img.shields.io/badge/License-Apache%202.0-blue.svg
    :target: https://img.shields.io/badge/License-Apache%202.0-blue.svg
@@ -30,6 +50,10 @@ Horovod
    :target: https://pepy.tech/project/horovod
    :alt: Downloads
 
+.. raw:: html
+
+   </div>
+
 .. inclusion-marker-start-do-not-remove
 
 |
@@ -40,13 +64,13 @@ The goal of Horovod is to make distributed deep learning fast and easy to use.
 
 .. raw:: html
 
-   <p><img src="https://raw.githubusercontent.com/lfai/artwork/master/lfai/horizontal/color/lfai-color.png" alt="LF AI" width="200"/></p>
+   <p><img src="https://raw.githubusercontent.com/lfai/artwork/master/lfaidata-assets/lfaidata-project-badge/graduate/color/lfaidata-project-badge-graduate-color.png" alt="LF AI & Data" width="200"/></p>
 
 
-Horovod is hosted by the `LF AI Foundation <https://lfdl.io>`_ (LF AI). If you are a company that is deeply
+Horovod is hosted by the `LF AI & Data Foundation <https://lfdl.io>`_ (LF AI & Data). If you are a company that is deeply
 committed to using open source technologies in artificial intelligence, machine, and deep learning, and want to support
-the communities of open source projects in these domains, consider joining the LF AI Foundation. For details
-about who's involved and how Horovod plays a role, read the LF AI `announcement <https://lfdl.io/press/2018/12/13/lf-deep-learning-welcomes-horovod-distributed-training-framework-as-newest-project/>`_.
+the communities of open source projects in these domains, consider joining the LF AI & Data Foundation. For details
+about who's involved and how Horovod plays a role, read the Linux Foundation `announcement <https://lfdl.io/press/2018/12/13/lf-deep-learning-welcomes-horovod-distributed-training-framework-as-newest-project/>`_.
 
 |
 
@@ -85,15 +109,13 @@ Install
 -------
 To install Horovod:
 
-1. Install `Open MPI <https://www.open-mpi.org/>`_ or another MPI implementation. Learn how to install Open MPI `on this page <https://www.open-mpi.org/faq/?category=building#easy-build>`_.
-
-   **Note**: Open MPI 3.1.3 has an issue that may cause hangs. The recommended fix is to downgrade to Open MPI 3.1.2 or upgrade to Open MPI 4.0.0.
+1. Install `CMake <https://cmake.org/install/>`__
 
 .. raw:: html
 
     <p/>
 
-2. If you've installed TensorFlow from `PyPI <https://pypi.org/project/tensorflow>`__, make sure that the ``g++-4.8.5`` or ``g++-4.9`` is installed.
+2. If you've installed TensorFlow from `PyPI <https://pypi.org/project/tensorflow>`__, make sure that the ``g++-4.8.5`` or ``g++-4.9`` or above is installed.
 
    If you've installed PyTorch from `PyPI <https://pypi.org/project/torch>`__, make sure that the ``g++-4.9`` or above is installed.
 
@@ -117,11 +139,11 @@ To install Horovod:
 
       $ HOROVOD_GPU_OPERATIONS=NCCL pip install horovod
 
-This basic installation is good for laptops and for getting to know Horovod.
-
 For more details on installing Horovod with GPU support, read `Horovod on GPU <gpus.rst>`_.
 
 For the full list of Horovod installation options, read the `Installation Guide <install.rst>`_.
+
+If you want to use MPI, read `Horovod with MPI <mpi.rst>`_.
 
 If you want to use Conda, read `Building a Conda environment with GPU support for Horovod <conda.rst>`_.
 
@@ -266,26 +288,25 @@ See `Run Horovod <running.rst>`_ for more details, including RoCE/InfiniBand twe
 
 5. To run in Kubernetes, see `Kubeflow <https://github.com/kubeflow/examples/tree/master/demos/yelp_demo/ks_app/vendor/kubeflow/mpi-job>`_, `MPI Operator <https://github.com/kubeflow/mpi-operator/>`_, `Helm Chart <https://github.com/kubernetes/charts/tree/master/stable/horovod/>`_, `FfDL <https://github.com/IBM/FfDL/tree/master/etc/examples/horovod/>`_, and `Polyaxon <https://docs.polyaxon.com/integrations/horovod/>`_.
 
-6. To run in Spark, see `Spark <spark.rst>`_.
+6. To run on Spark, see `Horovod on Spark <spark.rst>`_.
 
-7. To run in Singularity, see `Singularity <https://github.com/sylabs/examples/tree/master/machinelearning/horovod>`_.
+7. To run on Ray, see `Horovod on Ray <ray.rst>`_.
 
-8. To run in a LSF HPC cluster (e.g. Summit), see `LSF <lsf.rst>`_.
+8. To run in Singularity, see `Singularity <https://github.com/sylabs/examples/tree/master/machinelearning/horovod>`_.
+
+9. To run in a LSF HPC cluster (e.g. Summit), see `LSF <lsf.rst>`_.
 
 Gloo
 ----
 `Gloo <https://github.com/facebookincubator/gloo>`_ is an open source collective communications library developed by Facebook.
 
-Gloo comes included with Horovod, and allows users to run Horovod without requiring MPI to be installed. Gloo support only requires
-that you have `CMake <https://cmake.org/>`_ installed, and is only supported on Linux at this time.
+Gloo comes included with Horovod, and allows users to run Horovod without requiring MPI to be installed.
 
 For environments that have support both MPI and Gloo, you can choose to use Gloo at runtime by passing the ``--gloo`` argument to ``horovodrun``:
 
 .. code-block:: bash
 
      $ horovodrun --gloo -np 2 python train.py
-
-Gloo support is still early in its development, and more features are coming soon.
 
 mpi4py
 ------
@@ -403,10 +424,11 @@ The Horovod source code was based off the Baidu `tensorflow-allreduce <https://g
 repository written by Andrew Gibiansky and Joel Hestness. Their original work is described in the article
 `Bringing HPC Techniques to Deep Learning <http://andrew.gibiansky.com/blog/machine-learning/baidu-allreduce/>`_.
 
-Mailing lists
--------------
-Subscribe to `Horovod Announce <https://lists.lfai.foundation/g/horovod-announce>`_ and 
-`Horovod Technical-Discuss <https://lists.lfai.foundation/g/horovod-technical-discuss>`_ to stay up to date.
+Getting Involved
+----------------
+- `Community Slack <https://forms.gle/cPGvty5hp31tGfg79>`_ for collaboration and discussion
+- `Horovod Announce <https://lists.lfai.foundation/g/horovod-announce>`_ for updates on the project
+- `Horovod Technical-Discuss <https://lists.lfai.foundation/g/horovod-technical-discuss>`_ for public discussion
 
 
 .. inclusion-marker-end-do-not-remove

@@ -86,9 +86,12 @@ AdasumGpuAllreduceOp::NcclHierarchical(std::vector<TensorTableEntry>& entries,
     buffer_len = (size_t)first_entry.output->size();
   }
 
-  int64_t num_elements = 0;
-  for (auto& e : entries) {
-    num_elements += e.tensor->shape().num_elements();
+  int64_t num_elements = buffer_len / DataType_Size(first_entry.tensor->dtype());
+
+  if (response.prescale_factor() != 1.0) {
+    // Execute prescaling op
+    ScaleBuffer(response.prescale_factor(), entries, fused_input_data, buffer_data, num_elements);
+    fused_input_data = buffer_data; // for unfused, scale is done out of place
   }
 
   // Do allreduce.
@@ -285,6 +288,11 @@ AdasumGpuAllreduceOp::NcclHierarchical(std::vector<TensorTableEntry>& entries,
       gpu_context_->RecordEvent(gpu_op_context_.event_queue, NCCL_BCAST,
                                 *gpu_op_context_.stream);
     }
+  }
+
+  if (response.postscale_factor() != 1.0) {
+    // Execute postscaling op
+    ScaleBuffer(response.postscale_factor(), entries, buffer_data, buffer_data, num_elements);
   }
 
   // Copy memory out of the fusion buffer.

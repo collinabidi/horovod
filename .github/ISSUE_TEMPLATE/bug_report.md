@@ -18,6 +18,7 @@ assignees: ''
 8. Spark / PySpark version:
 9. OS and version:
 10. GCC version:
+11. CMake version:
 
 **Checklist:**
 1. Did you search issues to find if somebody asked this question before?
@@ -26,5 +27,5 @@ assignees: ''
 4. Did you check if you question is answered in the [troubleshooting guide](https://github.com/horovod/horovod/blob/master/docs/troubleshooting.rst)?
 
 **Bug report:**
-Please describe errorneous behavior you're observing and steps to reproduce it.
+Please describe erroneous behavior you're observing and steps to reproduce it.
 

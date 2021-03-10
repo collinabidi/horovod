@@ -1,6 +1,7 @@
 # Copyright 2016 The TensorFlow Authors. All Rights Reserved.
 # Modifications copyright (C) 2019 Uber Technologies, Inc.
 # Modifications copyright Microsoft
+# Modifications copyright (C) 2020, NVIDIA CORPORATION. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,8 +23,8 @@ from tensorflow.python.framework import load_library
 from tensorflow.python.framework import ops
 from tensorflow.python.platform import resource_loader
 
-from horovod.common.util import get_ext_suffix, get_average_backwards_compatibility_fun, gpu_available, \
-    num_rank_is_power_2
+from horovod.common.util import check_installed_version, get_ext_suffix, \
+    get_average_backwards_compatibility_fun, gpu_available, num_rank_is_power_2
 from horovod.common.basics import HorovodBasics as _HorovodBasics
 from horovod.tensorflow.util import _executing_eagerly
 
@@ -41,14 +42,23 @@ def _load_library(name):
     library = load_library.load_op_library(filename)
     return library
 
-
-MPI_LIB = _load_library('mpi_lib' + get_ext_suffix())
+# Check possible symbol not found error from tensorflow version mismatch
+try:
+    MPI_LIB = _load_library('mpi_lib' + get_ext_suffix())
+except Exception as e:
+    check_installed_version('tensorflow', tf.__version__, e)
+    raise e
+else:
+    check_installed_version('tensorflow', tf.__version__)
 
 _basics = _HorovodBasics(__file__, 'mpi_lib')
 
 # import basic methods
 init = _basics.init
 shutdown = _basics.shutdown
+is_initialized = _basics.is_initialized
+start_timeline = _basics.start_timeline
+stop_timeline = _basics.stop_timeline
 size = _basics.size
 local_size = _basics.local_size
 rank = _basics.rank
@@ -61,6 +71,8 @@ gloo_built = _basics.gloo_built
 nccl_built = _basics.nccl_built
 ddl_built = _basics.ddl_built
 ccl_built = _basics.ccl_built
+cuda_built = _basics.cuda_built
+rocm_built = _basics.rocm_built
 
 # import reduction op values
 Average = _basics.Average
@@ -86,7 +98,8 @@ def _normalize_name(name):
     return re.sub('[^a-zA-Z0-9_]', '_', name)
 
 
-def _allreduce(tensor, name=None, op=Sum):
+def _allreduce(tensor, name=None, op=Sum, prescale_factor=1.0, postscale_factor=1.0,
+               ignore_name_scope=False):
     """An op which reduces an input tensor over all the Horovod processes. The
     default reduction is a sum.
 
@@ -100,7 +113,10 @@ def _allreduce(tensor, name=None, op=Sum):
     """
     if name is None and not _executing_eagerly():
         name = 'HorovodAllreduce_%s' % _normalize_name(tensor.name)
-    return MPI_LIB.horovod_allreduce(tensor, name=name, reduce_op=op)
+    return MPI_LIB.horovod_allreduce(tensor, name=name, reduce_op=op,
+                                     prescale_factor=prescale_factor,
+                                     postscale_factor=postscale_factor,
+                                     ignore_name_scope=ignore_name_scope)
 
 
 @ops.RegisterGradient('HorovodAllreduce')
@@ -114,10 +130,64 @@ def _allreduce_grad(op, grad):
     Returns:
       The gradient with respect to the input of the op.
     """
-    return _allreduce(grad)
+    reduce_op = op.get_attr('reduce_op')
+    prescale_factor = op.get_attr('prescale_factor')
+    postscale_factor = op.get_attr('postscale_factor')
+    ignore_name_scope = op.get_attr('ignore_name_scope')
+    return _allreduce(grad, op=reduce_op, prescale_factor=prescale_factor,
+                      postscale_factor=postscale_factor,
+                      ignore_name_scope=ignore_name_scope)
 
 
-def allgather(tensor, name=None):
+def _grouped_allreduce(tensors, name=None, op=Sum, prescale_factor=1.0, postscale_factor=1.0,
+                       ignore_name_scope=False):
+    """An op which reduces input tensors over all the Horovod processes. The
+    default reduction is a sum.
+
+    The reduction operation is keyed by the name of the op. The tensor type and
+    shape must be the same on all Horovod processes for a given name. The reduction
+    will not start until all processes are ready to send and receive the tensor.
+
+    The reduction operations are keyed by the name of the op. Reductions are
+    performed across tensors in the same list position. The tensor type and
+    shape must be the same on all Horovod processes for tensors sharing
+    positions in the input tensor list. The reduction will not start until all
+    processes are ready to send and receive the tensors.
+
+    Returns:
+      A list of tensors of the same shape and type as those in `tensors`,
+      summed across all processes.
+    """
+    if name is None and not _executing_eagerly():
+        name = _normalize_name('HorovodGroupedAllreduce_%s_%s' % (tensors[0].name, tensors[-1].name))
+    return MPI_LIB.horovod_grouped_allreduce(tensors, name=name, reduce_op=op,
+                                             prescale_factor=prescale_factor,
+                                             postscale_factor=postscale_factor,
+                                             ignore_name_scope=ignore_name_scope)
+
+
+@ops.RegisterGradient('HorovodGroupedAllreduce')
+def _grouped_allreduce_grad(op, *grads):
+    """Gradient for the grouped allreduce op.
+
+    Args:
+      op: An operation.
+      grads: List of `Tensor` gradients with respect to the outputs of the op.
+
+    Returns:
+      The gradients with respect to the inputs of the op.
+    """
+    reduce_op = op.get_attr('reduce_op')
+    prescale_factor = op.get_attr('prescale_factor')
+    postscale_factor = op.get_attr('postscale_factor')
+    ignore_name_scope = op.get_attr('ignore_name_scope')
+    # TODO(joshr): should this be done as separate allreduce ops?
+    return _grouped_allreduce(list(grads), op=reduce_op, prescale_factor=prescale_factor,
+                      postscale_factor=postscale_factor,
+                      ignore_name_scope=ignore_name_scope)
+
+
+def allgather(tensor, name=None, ignore_name_scope=False):
     """An op which concatenates the input tensor with the same input tensor on
     all other Horovod processes.
 
@@ -133,7 +203,8 @@ def allgather(tensor, name=None):
     """
     if name is None and not _executing_eagerly():
         name = 'HorovodAllgather_%s' % _normalize_name(tensor.name)
-    return MPI_LIB.horovod_allgather(tensor, name=name)
+    return MPI_LIB.horovod_allgather(tensor, name=name,
+                                     ignore_name_scope=ignore_name_scope)
 
 
 @ops.RegisterGradient('HorovodAllgather')
@@ -147,22 +218,23 @@ def _allgather_grad(op, grad):
     Returns:
       The gradient with respect to the input of the op.
     """
-    grad = _allreduce(grad)
+    ignore_name_scope = op.get_attr('ignore_name_scope')
+    grad = _allreduce(grad, op=Average, ignore_name_scope=ignore_name_scope)
 
     with tf.device('/cpu:0'):
         # Keep the tensor of split sizes on CPU.
         x = op.inputs[0]
-        d0 = x.get_shape().as_list()[0]
-        d = tf.convert_to_tensor([d0], dtype=tf.int32)
+        d = tf.shape(x)
+        d = tf.reshape(d[0], [1])
 
         s = size()
-        d = tf.reshape(allgather(d), [s])
+        d = tf.reshape(allgather(d, ignore_name_scope=ignore_name_scope), [s])
 
     splits = tf.split(grad, num_or_size_splits=d, axis=0)
     return splits[rank()]
 
 
-def broadcast(tensor, root_rank, name=None):
+def broadcast(tensor, root_rank, name=None, ignore_name_scope=False):
     """An op which broadcasts the input tensor on root rank to the same input tensor
     on all other Horovod processes.
 
@@ -176,7 +248,8 @@ def broadcast(tensor, root_rank, name=None):
     """
     if name is None and not _executing_eagerly():
         name = 'HorovodBroadcast_%s' % _normalize_name(tensor.name)
-    return MPI_LIB.horovod_broadcast(tensor, name=name, root_rank=root_rank)
+    return MPI_LIB.horovod_broadcast(tensor, name=name, root_rank=root_rank,
+                                     ignore_name_scope=ignore_name_scope)
 
 
 @ops.RegisterGradient('HorovodBroadcast')
@@ -191,11 +264,70 @@ def _broadcast_grad(op, grad):
       The gradient with respect to the input of the op.
     """
     root_rank = op.get_attr('root_rank')
-    grad_reduced = _allreduce(grad)
+    ignore_name_scope = op.get_attr('ignore_name_scope')
+    grad_reduced = _allreduce(grad, op=Average,
+                              ignore_name_scope=ignore_name_scope)
     if rank() != root_rank:
         return grad_reduced * 0
     return grad_reduced
 
+
+def alltoall(tensor, splits=None, name=None, ignore_name_scope=False):
+    """An op that scatters slices of the input tensor to all other Horovod processes
+    and returns a tensor of gathered slices from all other Horovod processes.
+
+    The slicing is done on the first dimension, so the input tensors on the
+    different processes must have the same rank and shape, except for the first
+    dimension, which is allowed to be different.
+
+    Arguments:
+        tensor: A tensor to distribute with alltoall.
+        splits: A tensor of integers in rank order describing how many
+                elements in `tensor` to send to each worker.  Splitting is
+                applied along the first dimension of `tensor`. If `splits` is
+                not provided, the first dimension is split equally by the
+                number of Horovod processes.
+        name: A name of the alltoall operation.
+        ignore_name_scope: If True, ignores any outer name scope applied by
+                           TensorFlow in the name used by the Horovod operation.
+
+    Returns:
+      1) A tensor of the same type as `tensor`, concatenated on dimension zero
+         across all processes. The shape is identical to the input shape, except for
+         the first dimension, which may be greater and is the sum of all first
+         dimensions of the gathered tensor slices from different Horovod processes.
+      2) If `splits` has been provided: A tensor of integers in rank order
+         describing how many elements in the output tensor have been received
+         from each worker.
+    """
+    # If splits not provided, create empty tensor as placeholder
+    splits_ = tf.convert_to_tensor(splits) if splits is not None else tf.constant([], dtype=tf.int32)
+
+    if name is None and not _executing_eagerly():
+        name = 'HorovodAlltoall_%s' % _normalize_name(tensor.name)
+    output, rsplits = MPI_LIB.horovod_alltoall(tensor, splits=splits_, name=name,
+                                               ignore_name_scope=ignore_name_scope)
+    return (output, rsplits) if splits is not None else output
+
+@ops.RegisterGradient('HorovodAlltoall')
+def _alltoall_grad(op, grad_wrt_output, grad_wrt_received_splits):
+    """Gradient for alltoall op.
+
+    Args:
+      op: Original operation.
+      grad_wrt_output: `Tensor` gradient with respect to the output of the op.
+      grad_wrt_received_splits: dead argument (integer output)
+
+    Returns:
+      The gradient with respect to the input of the op.
+    """
+    ignore_name_scope = op.get_attr('ignore_name_scope')
+    recvsplits = op.outputs[1]
+
+    grad_wrt_tensor, _ = alltoall(grad_wrt_output, splits=recvsplits, ignore_name_scope=ignore_name_scope)
+    grad_wrt_splits = None # not differentiable (integer variable)
+
+    return [grad_wrt_tensor, grad_wrt_splits]
 
 def join():
     return MPI_LIB.horovod_join()

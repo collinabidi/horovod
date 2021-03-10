@@ -19,6 +19,7 @@ class _HorovodArgs(object):
         self.np = 1
         self.check_build = None
         self.ssh_port = None
+        self.ssh_identity_file = None
         self.disable_cache = None
         self.start_timeout = None
         self.nic = None
@@ -28,6 +29,7 @@ class _HorovodArgs(object):
         self.run_func = None
         self.config_file = None
         self.nics = None
+        self.executable = None
 
         # tuneable parameter arguments
         self.fusion_threshold_mb = None
@@ -68,12 +70,13 @@ class _HorovodArgs(object):
         self.tcp_flag = None
         self.binding_args = None
         self.num_nccl_streams = None
-        self.ccl_bgt_affinity = None
+        self.thread_affinity = None
         self.gloo_timeout_seconds = None
 
         # logging arguments
         self.log_level = None
-        self.log_hide_timestamp = None
+        self.log_with_timestamp = None
+        self.prefix_output_with_timestamp = None
 
         # host arguments
         self.hosts = None
@@ -99,13 +102,15 @@ def run(
         hostfile=None,
         start_timeout=None,
         ssh_port=None,
+        ssh_identity_file=None,
         disable_cache=None,
         output_filename=None,
         verbose=None,
         use_gloo=None,
         use_mpi=None,
         mpi_args=None,
-        network_interface=None):
+        network_interface=None,
+        executable=None):
     """
     Launch a Horovod job to run the specified process function and get the return value.
 
@@ -143,6 +148,7 @@ def run(
                           HOROVOD_START_TIMEOUT can also be used to
                           specify the initialization timeout.
     :param ssh_port: SSH port on all the hosts.
+    :param ssh_identity_file: SSH identity (private key) file.
     :param disable_cache: If the flag is not set, horovodrun will perform
                           the initialization checks only once every 60
                           minutes -- if the checks successfully pass.
@@ -161,6 +167,7 @@ def run(
     :param network_interface: Network interfaces to use for communication separated by comma. If
                              not specified, Horovod will find the common NICs among all the
                              workers and use those; example, eth0,eth1.
+    :param executable: Optional executable to run when launching the workers. Defaults to `sys.executable`.
     :return: Return a list which contains values return by all Horovod processes.
              The index of the list corresponds to the rank of each Horovod process.
     """
@@ -189,6 +196,7 @@ def run(
     hargs.hostfile = hostfile
     hargs.start_timeout = start_timeout
     hargs.ssh_port = ssh_port
+    hargs.ssh_identity_file = ssh_identity_file
     hargs.mpi_args = mpi_args
     hargs.disable_cache = disable_cache
     hargs.output_filename = output_filename
@@ -197,5 +205,6 @@ def run(
     hargs.use_mpi = use_mpi
     hargs.nics = network_interface
     hargs.run_func = wrapped_func
+    hargs.executable = executable
 
     return _run(hargs)

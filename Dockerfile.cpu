@@ -1,12 +1,15 @@
 FROM ubuntu:18.04
 
-ENV TENSORFLOW_VERSION=2.1.0
-ENV PYTORCH_VERSION=1.4.0
-ENV TORCHVISION_VERSION=0.5.0
-ENV MXNET_VERSION=1.6.0
+ENV TENSORFLOW_VERSION=2.3.0
+ENV PYTORCH_VERSION=1.6.0
+ENV TORCHVISION_VERSION=0.7.0
+ENV MXNET_VERSION=1.5.0
 
-# Python 3.6 is supported by Ubuntu Bionic out of the box
-ARG python=3.6
+ENV PYSPARK_PACKAGE=pyspark==2.4.7
+ENV SPARK_PACKAGE=spark-2.4.7/spark-2.4.7-bin-hadoop2.7.tgz
+
+# Python 3.7 is supported by Ubuntu Bionic out of the box
+ARG python=3.7
 ENV PYTHON_VERSION=${python}
 
 # Set default shell to /bin/bash
@@ -15,7 +18,7 @@ SHELL ["/bin/bash", "-cu"]
 RUN apt-get update && apt-get install -y --allow-downgrades --allow-change-held-packages --no-install-recommends \
         build-essential \
         cmake \
-        g++-4.8 \
+        g++-7 \
         git \
         curl \
         vim \
@@ -38,12 +41,19 @@ RUN curl -O https://bootstrap.pypa.io/get-pip.py && \
 
 # Install TensorFlow, Keras, PyTorch and MXNet
 RUN pip install future typing
-RUN pip install numpy \
-        tensorflow==${TENSORFLOW_VERSION} \
-        keras \
-        h5py
+RUN pip install tensorflow-cpu==${TENSORFLOW_VERSION} \
+                keras \
+                h5py
 RUN pip install torch==${PYTORCH_VERSION} torchvision==${TORCHVISION_VERSION}
 RUN pip install mxnet==${MXNET_VERSION}
+
+# Install Spark stand-alone cluster.
+RUN wget --progress=dot:giga https://archive.apache.org/dist/spark/${SPARK_PACKAGE} -O - | tar -xzC /tmp; \
+    archive=$(basename "${SPARK_PACKAGE}") bash -c "mv -v /tmp/\${archive/%.tgz/} /spark"
+
+# Install PySpark.
+RUN apt-get update -qq && apt install -y openjdk-8-jdk-headless
+RUN pip install ${PYSPARK_PACKAGE}
 
 # Install Open MPI
 RUN mkdir /tmp/openmpi && \
@@ -58,8 +68,8 @@ RUN mkdir /tmp/openmpi && \
     rm -rf /tmp/openmpi
 
 # Install Horovod
-RUN HOROVOD_WITH_TENSORFLOW=1 HOROVOD_WITH_PYTORCH=1 HOROVOD_WITH_MXNET=1 \
-    pip install --no-cache-dir horovod
+RUN MAKEFLAGS="-j1" HOROVOD_WITH_TENSORFLOW=1 HOROVOD_WITH_PYTORCH=1 HOROVOD_WITH_MXNET=1 \
+    pip install --no-cache-dir horovod[all-frameworks]
 
 # Install OpenSSH for MPI to communicate between containers
 RUN apt-get install -y --no-install-recommends openssh-client openssh-server && \

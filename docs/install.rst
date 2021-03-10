@@ -7,12 +7,16 @@ Requirements
 ------------
 
 - Python >= 3.6
-- MPI or CMake
+- CMake
 - TensorFlow, PyTorch, or MXNet
+- (Optional) MPI
 
 For best performance on GPU:
 
 - `NCCL 2 <https://developer.nvidia.com/nccl>`__
+
+If Horovod in unable to find the CMake binary, you may need to set ``HOROVOD_CMAKE`` in your environment before
+installing.
 
 Frameworks
 ----------
@@ -48,7 +52,7 @@ To ensure that Horovod is built with TensorFlow support enabled:
 To skip TensorFlow, set ``HOROVOD_WITHOUT_TENSORFLOW=1`` in your environment.
 
 If you've installed TensorFlow from `PyPI <https://pypi.org/project/tensorflow>`__, make sure that
-the ``g++-4.8.5`` or ``g++-4.9`` is installed.
+the ``g++-4.8.5`` or ``g++-4.9`` or above is installed.
 
 PyTorch
 ~~~~~~~
@@ -67,11 +71,17 @@ above is installed.
 MXNet
 ~~~~~
 
-To ensure that Horovod is built with MXNet support enabled:
+To ensure that Horovod is built with MXNet CPU support enabled:
 
 .. code-block:: bash
 
     $ HOROVOD_WITH_MXNET=1 pip install horovod[mxnet]
+
+Some MXNet versions do not work with Horovod:
+
+- MXNet 1.4.0 and earlier have `GCC incompatibility issues <https://github.com/horovod/horovod/issues/884>`__. Use MXNet 1.4.1 or later with Horovod 0.16.2 or later to avoid these incompatibilities.
+- MXNet 1.5.1, 1.6.0, 1.7.0, and 1.7.0.post1 are missing MKLDNN headers, so they do not work with Horovod. Use 1.5.1.post0, 1.6.0.post0, and 1.7.0.post0, respectively.
+- MXNet 1.6.0.post0 and 1.7.0.post0 are only available as mxnet-cu101 and mxnet-cu102.
 
 To skip MXNet, set ``HOROVOD_WITHOUT_MXNET=1`` in your environment.
 
@@ -137,8 +147,11 @@ Gloo mode uses ``horovodrun`` to launch worker processes.
 
 Gloo is required to use the elastic / fault tolerant API for Horovod.
 
-If Horovod in unable to find the CMake binary, you may need to set ``HOROVOD_CMAKE`` in your environment before
-installing.
+**Note**: macOS users must install `libuv <https://github.com/libuv/libuv>`_ in order to use Gloo:
+
+.. code-block:: bash
+
+    $ brew install libuv
 
 Tensor Operations
 -----------------
@@ -177,7 +190,7 @@ oneCCL
 ~~~~~~
 
 oneCCL is an Intel library for accelerated collective operations on CPU. See
-`Horovod with Intel(R) oneCCL <oneccl.md>`_ for more details.
+`Horovod with Intel(R) oneCCL <oneccl.rst>`_ for more details.
 
 Set ``HOROVOD_CPU_OPERATIONS=CCL`` to use oneCCL.
 
@@ -214,10 +227,8 @@ Optional environment variables that can be set to configure the installation pro
 Possible values are given in curly brackets: {}.
 
 * ``HOROVOD_BUILD_ARCH_FLAGS`` - additional C++ compilation flags to pass in for your build architecture.
-* ``HOROVOD_MPICXX_SHOW`` - custom command to show MPI compilation flags (default: ``mpicxx -show``).
 * ``HOROVOD_CUDA_HOME`` - path where CUDA include and lib directories can be found.
-* ``HOROVOD_CUDA_INCLUDE`` - path to CUDA include directory.
-* ``HOROVOD_CUDA_LIB`` - path to CUDA lib directory.
+* ``HOROVOD_BUILD_CUDA_CC_LIST`` - List of compute capabilities to build Horovod CUDA kernels for (example: ``HOROVOD_BUILD_CUDA_CC_LIST=60,70,75``)
 * ``HOROVOD_ROCM_HOME`` - path where ROCm include and lib directories can be found.
 * ``HOROVOD_NCCL_HOME`` - path where NCCL include and lib directories can be found.
 * ``HOROVOD_NCCL_INCLUDE`` - path to NCCL include directory.

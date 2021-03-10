@@ -2,7 +2,7 @@ Horovod with MXNet
 ==================
 Horovod supports Apache MXNet and regular TensorFlow in similar ways.
 
-See full training `MNIST <https://github.com/horovod/horovod/blob/master/examples/mxnet_mnist.py>`__ and `ImageNet <https://github.com/horovod/horovod/blob/master/examples/mxnet_imagenet_resnet50.py>`__ examples.
+See full training `MNIST <https://github.com/horovod/horovod/blob/master/examples/mxnet/mxnet_mnist.py>`__ and `ImageNet <https://github.com/horovod/horovod/blob/master/examples/mxnet/mxnet_imagenet_resnet50.py>`__ examples.
 The script below provides a simple skeleton of code block based on the Apache MXNet Gluon API.
 
 .. code-block:: python
@@ -54,4 +54,8 @@ The script below provides a simple skeleton of code block based on the Apache MX
 
 
 
-.. NOTE:: The `known issue <https://github.com/horovod/horovod/issues/884>`__ when running Horovod with MXNet on a Linux system with GCC version 5.X and above has been resolved. Please use MXNet 1.4.1 or later releases with Horovod 0.16.2 or later releases to avoid the GCC incompatibility issue. MXNet 1.4.0 release works with Horovod 0.16.0 and 0.16.1 releases with the GCC incompatibility issue unsolved.
+.. NOTE:: Some MXNet versions do not work with Horovod:
+
+    - MXNet 1.4.0 and earlier have `GCC incompatibility issues <https://github.com/horovod/horovod/issues/884>`__. Use MXNet 1.4.1 or later with Horovod 0.16.2 or later to avoid these incompatibilities.
+    - MXNet 1.5.1, 1.6.0, 1.7.0, and 1.7.0.post1 are missing MKLDNN headers, so they do not work with Horovod. Use 1.5.1.post0, 1.6.0.post0, and 1.7.0.post0, respectively.
+    - MXNet 1.6.0.post0 and 1.7.0.post0 are only available as mxnet-cu101 and mxnet-cu102.

@@ -1,5 +1,6 @@
 // Copyright 2016 The TensorFlow Authors. All Rights Reserved.
 // Modifications copyright (C) 2019 Uber Technologies, Inc.
+// Modifications copyright (C) 2020, NVIDIA CORPORATION. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,6 +16,7 @@
 // =============================================================================
 
 #include "collective_operations.h"
+#include "../message.h"
 
 namespace horovod {
 namespace common {
@@ -130,6 +132,40 @@ void AllreduceOp::SHMemcpyEntryOutFusionBuffer(
               (size_t)e.output->size());
 }
 /***********************************************************************************************************************/
+void AllreduceOp::ScaleBuffer(
+    double scale_factor, const std::vector<TensorTableEntry>& entries,
+    const void* fused_input_data, void* buffer_data,
+    int64_t num_elements) {
+
+  DataType dtype = entries[0].tensor->dtype();
+  switch (dtype) {
+    case HOROVOD_UINT8:
+      ScaleBufferCPUImpl((const uint8_t*) fused_input_data, (uint8_t*) buffer_data, num_elements, scale_factor);
+      break;
+    case HOROVOD_INT8:
+      ScaleBufferCPUImpl((const int8_t*) fused_input_data, (int8_t*) buffer_data, num_elements, scale_factor);
+      break;
+    case HOROVOD_INT32:
+      ScaleBufferCPUImpl((const int32_t*) fused_input_data, (int32_t*) buffer_data, num_elements, scale_factor);
+      break;
+    case HOROVOD_INT64:
+      ScaleBufferCPUImpl((const int64_t*) fused_input_data, (int64_t*) buffer_data, num_elements, scale_factor);
+      break;
+    case HOROVOD_FLOAT16:
+      ScaleBufferCPUImpl((const unsigned short*) fused_input_data, (unsigned short*) buffer_data, num_elements, (float) scale_factor);
+      break;
+    case HOROVOD_FLOAT32:
+      ScaleBufferCPUImpl((const float*) fused_input_data, (float*) buffer_data, num_elements, (float) scale_factor);
+      break;
+    case HOROVOD_FLOAT64:
+      ScaleBufferCPUImpl((const double*) fused_input_data, (double*) buffer_data, num_elements, scale_factor);
+      break;
+    default:
+      throw std::logic_error("Type " + DataType_Name(dtype) +
+                             " not supported by ScaleBufferCPUImpl.");
+  }
+}
+
 // Allgather
 AllgatherOp::AllgatherOp(HorovodGlobalState* global_state)
     : HorovodOp(global_state) {}
@@ -156,9 +192,15 @@ Status AllgatherOp::AllocateOutput(std::vector<TensorTableEntry>& entries,
     for (int rc = 0; rc < global_size; ++rc) {
       auto component_size = tensor_sizes[ec * global_size + rc];
       total_entry_dimension_size += component_size;
-      recvcounts[rc] += component_size * single_slice_shape.num_elements();
-      entry_component_sizes[ec][rc] =
-          component_size * single_slice_shape.num_elements();
+
+      if (recvcounts) {
+        recvcounts[rc] += component_size * single_slice_shape.num_elements();
+      }
+
+      if (entry_component_sizes) {
+        entry_component_sizes[ec][rc] =
+                          component_size * single_slice_shape.num_elements();
+      }
     }
 
     // Allgather output will have shape of:
@@ -259,6 +301,9 @@ void AllgatherOp::MemcpyEntryOutFusionBuffer(
 }
 
 BroadcastOp::BroadcastOp(HorovodGlobalState* global_state)
+    : HorovodOp(global_state) {}
+
+AlltoallOp::AlltoallOp(HorovodGlobalState* global_state)
     : HorovodOp(global_state) {}
 
 // Join

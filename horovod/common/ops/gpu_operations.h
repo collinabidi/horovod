@@ -1,5 +1,6 @@
 // Copyright 2016 The TensorFlow Authors. All Rights Reserved.
 // Modifications copyright (C) 2019 Uber Technologies, Inc.
+// Modifications copyright (C) 2020, NVIDIA CORPORATION. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,6 +23,7 @@
 #include <vector>
 
 #if HAVE_CUDA
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 using gpuError_t = cudaError_t;
 using gpuEvent_t = cudaEvent_t;
@@ -82,6 +84,9 @@ public:
   void MemcpyAsyncH2D(void* dst, const void* src, size_t count, gpuStream_t stream);
   void MemcpyAsyncD2H(void* dst, const void* src, size_t count, gpuStream_t stream);
 
+  void ScaleBufferImpl(const void* fused_input_data, void* buffer_data, int64_t num_elements,
+                       double scale_factor, DataType dtype, gpuStream_t stream);
+
   // Thread pool for finalizer threads
   ThreadPool finalizer_thread_pool;
 
@@ -131,14 +136,25 @@ public:
                const Response& response) const override;
 
 protected:
+#if HAVE_CUDA
+  void MemcpyInFusionBuffer(const std::vector<TensorTableEntry>& entries, const void*& fused_input_data,
+                                    void*& buffer_data, size_t& buffer_len) override;
+
+  void MemcpyOutFusionBuffer(const void* buffer_data, std::vector<TensorTableEntry>& entries) override;
+#endif
+
   void MemcpyEntryInFusionBuffer(const std::vector<TensorTableEntry>& entries,
                                  const TensorTableEntry& e, void* buffer_data_at_offset) override;
 
   void MemcpyEntryOutFusionBuffer(const std::vector<TensorTableEntry>& entries,
                                   const void* buffer_data_at_offset, TensorTableEntry& e) override;
 
+  void ScaleBuffer(double scale_factor, const std::vector<TensorTableEntry>& entries,
+                   const void* fused_input_data, void* buffer_data, int64_t num_elements);
+
   GPUContext* gpu_context_;
   GPUOpContext gpu_op_context_;
+
 };
 
 class GPUAllgather : public AllgatherOp {
@@ -173,6 +189,18 @@ public:
 
 protected:
   struct GPUContext* gpu_context_;
+  GPUOpContext gpu_op_context_;
+};
+
+class GPUAlltoall : public AlltoallOp {
+public:
+  GPUAlltoall(GPUContext* context,
+              HorovodGlobalState* global_state);
+  bool Enabled(const ParameterManager& param_manager,
+               const std::vector<TensorTableEntry>& entries,
+               const Response& response) const override;
+protected:
+  GPUContext* gpu_context_;
   GPUOpContext gpu_op_context_;
 };
 

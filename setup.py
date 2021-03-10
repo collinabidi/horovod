@@ -1,5 +1,6 @@
 # Copyright 2019 Uber Technologies, Inc. All Rights Reserved.
 # Modifications copyright Microsoft
+# Modifications copyright (C) 2020, NVIDIA CORPORATION. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,25 +16,14 @@
 # ==============================================================================
 
 import os
-import re
-import shlex
 import subprocess
 import sys
 import textwrap
-import traceback
-import pipes
-import warnings
-from copy import deepcopy
-from distutils.errors import CompileError, DistutilsError, \
-    DistutilsPlatformError, LinkError
-from distutils.sysconfig import customize_compiler
-from distutils.version import LooseVersion
 
 from setuptools import setup, Extension, find_packages
 from setuptools.command.build_ext import build_ext
 
 from horovod import __version__
-from horovod.common.util import env
 
 
 class CMakeExtension(Extension):
@@ -54,7 +44,6 @@ shmem_lib = CMakeExtension('shmem', cmake_lists_dir='third_party/shmem',
 ccl_root = os.environ.get('CCL_ROOT')
 have_ccl = ccl_root is not None
 
-
 def is_build_action():
     if len(sys.argv) <= 1:
         return False
@@ -67,7 +56,6 @@ def is_build_action():
 
     if sys.argv[1].startswith('install'):
         return True
-
 
 def check_tf_version():
     try:
@@ -1437,119 +1425,49 @@ def get_cmake_bin():
     return os.environ.get('HOROVOD_CMAKE', 'cmake')
 
 
-def build_cmake(build_ext, ext, prefix, additional_flags, options, plugin_ext=None):
-    cmake_bin = get_cmake_bin()
-
-    # All statically linked libraries will be placed here
-    lib_output_dir = os.path.abspath(os.path.join(build_ext.build_temp, 'lib', prefix))
-    if not os.path.exists(lib_output_dir):
-        os.makedirs(lib_output_dir)
-
-    if plugin_ext:
-        plugin_ext.library_dirs.append(lib_output_dir)
-    options['LIBRARY_DIRS'].append(lib_output_dir)
-
-    extdir = os.path.abspath(
-        os.path.dirname(build_ext.get_ext_fullpath(ext.name)))
-    config = 'Debug' if build_ext.debug else 'Release'
-
-    # Pass additional compiler flags by setting CMAKE_CXX_FLAGS_[DEBUG/RELEASE]
-    # so that cmake will append these flags to CMAKE_CXX_FLAGS
-    additional_cxx_flags = pipes.quote(' '.join(additional_flags))
-    cmake_cxx_flag = '-DCMAKE_CXX_FLAGS_{type}:STRING={flags}'.format(
-        type=config.upper(), flags=additional_cxx_flags)
-
-    use_mpi_flag = 'ON' if options['BUILD_MPI'] else 'OFF'
-    cmake_args = ['-DUSE_MPI=' + use_mpi_flag,
-                  '-DCMAKE_BUILD_TYPE=' + config,
-                  cmake_cxx_flag,
-                  '-DCMAKE_LIBRARY_OUTPUT_DIRECTORY_{}={}'.format(config.upper(), extdir),
-                  '-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY_{}={}'.format(config.upper(),
-                                                                  lib_output_dir),
-                  ]
-
-    cmake_build_args = [
-        '--config', config,
-        '--', '-j4',
-    ]
-
-    # Keep temp build files within a unique subdirectory
-    build_temp = os.path.abspath(os.path.join(build_ext.build_temp, ext.name, prefix))
-    if not os.path.exists(build_temp):
-        os.makedirs(build_temp)
-
-    # Config and build the extension
-    try:
-        subprocess.check_call([cmake_bin, ext.cmake_lists_dir] + cmake_args,
-                              cwd=build_temp)
-        subprocess.check_call([cmake_bin, '--build', '.'] + cmake_build_args,
-                              cwd=build_temp)
-    except OSError as e:
-        raise RuntimeError('CMake failed: {}'.format(str(e)))
-
-    # Add the library so the plugin will link against it during compilation
-    options['LIBRARIES'].append(ext.name)
-    if plugin_ext:
-        plugin_ext.libraries.append(ext.name)
-
-
-# run the customize_compiler
 class custom_build_ext(build_ext):
     def build_extensions(self):
-        options = get_common_options(self)
-        built_plugins = []
+        if os.getenv('HOROVOD_SKIP_COMPILE') == '1':
+            # Skip building extensions using CMake
+            print("Horovod is being installed without native libraries")
+            return
 
-        # If PyTorch is installed, it must be imported before TensorFlow, otherwise
-        # we may get an error: dlopen: cannot load any more object with static TLS
-        if not os.environ.get('HOROVOD_WITHOUT_PYTORCH'):
-            dummy_import_torch()
-        if not os.environ.get('HOROVOD_WITHOUT_TENSORFLOW'):
-            try:
-                build_tf_extension(self, options)
-                built_plugins.append(True)
-            except:
-                if not os.environ.get('HOROVOD_WITH_TENSORFLOW'):
-                    print(
-                        'INFO: Unable to build TensorFlow plugin, will skip it.\n\n'
-                        '%s' % traceback.format_exc(), file=sys.stderr)
-                    built_plugins.append(False)
-                else:
-                    raise
-        if not os.environ.get('HOROVOD_WITHOUT_PYTORCH'):
-            try:
-                torch_version = check_torch_version()
-                build_torch_extension_v2(self, options, torch_version)
-                built_plugins.append(True)
-            except:
-                if not os.environ.get('HOROVOD_WITH_PYTORCH'):
-                    print(
-                        'INFO: Unable to build PyTorch plugin, will skip it.\n\n'
-                        '%s' % traceback.format_exc(), file=sys.stderr)
-                    built_plugins.append(False)
-                else:
-                    raise
-        if not os.environ.get('HOROVOD_WITHOUT_MXNET'):
-            try:
-                build_mx_extension(self, options)
-                built_plugins.append(True)
-            except:
-                if not os.environ.get('HOROVOD_WITH_MXNET'):
-                    print(
-                        'INFO: Unable to build MXNet plugin, will skip it.\n\n'
-                        '%s' % traceback.format_exc(), file=sys.stderr)
-                    built_plugins.append(False)
-                else:
-                    raise
-        if not built_plugins:
-            raise DistutilsError(
-                'TensorFlow, PyTorch, and MXNet plugins were excluded from build. Aborting.')
-        if not any(built_plugins):
-            raise DistutilsError(
-                'None of TensorFlow, PyTorch, or MXNet plugins were built. See errors above.')
+        cmake_bin = get_cmake_bin()
+
+        config = 'Debug' if self.debug else 'RelWithDebInfo'
+
+        ext_name = self.extensions[0].name
+        build_dir = self.get_ext_fullpath(ext_name).replace(self.get_ext_filename(ext_name), '')
+        build_dir = os.path.abspath(build_dir)
+
+        cmake_args = ['-DCMAKE_BUILD_TYPE=' + config,
+                      '-DCMAKE_LIBRARY_OUTPUT_DIRECTORY_{}={}'.format(config.upper(), build_dir),
+                      '-DPYTHON_EXECUTABLE:FILEPATH=' + sys.executable]
+
+        make_args = []
+        if self.verbose:
+            make_args.append('VERBOSE=1')
+
+        cmake_build_args = ['--config', config]
+        if make_args:
+            # -- specifies that these args are going to the native build tool: make
+            cmake_build_args += ['--'] + make_args
+
+        if not os.path.exists(self.build_temp):
+            os.makedirs(self.build_temp)
+
+        # Config and build the extension
+        try:
+            subprocess.check_call([cmake_bin, self.extensions[0].cmake_lists_dir] + cmake_args,
+                                  cwd=self.build_temp)
+            subprocess.check_call([cmake_bin, '--build', '.'] + cmake_build_args,
+                                  cwd=self.build_temp)
+        except OSError as e:
+            raise RuntimeError('CMake failed: {}'.format(str(e)))
 
 
-require_list = ['cloudpickle', 'psutil', 'pyyaml']
-test_require_list = ['mock', 'pytest', 'pytest-forked', 'parameterized']
+# python packages required to use horovod in general
+require_list = ['cloudpickle', 'psutil', 'pyyaml', 'dataclasses;python_version<"3.7"']
 
 # framework dependencies
 tensorflow_require_list = ['tensorflow']
@@ -1559,17 +1477,35 @@ keras_require_list = ['keras>=2.0.8,!=2.0.9,!=2.1.0,!=2.1.1']
 pytorch_require_list = ['torch']
 mxnet_require_list = ['mxnet>=1.4.1']
 pyspark_require_list = ['pyspark>=2.3.2;python_version<"3.8"',
-                        # TODO: change to 'pyspark>=3.0.0' once spark3 is released
-                        'pyspark>=3.0.0.dev;python_version>="3.8"']
-spark_require_list = ['h5py>=2.9', 'numpy', 'petastorm>=0.9.0', 'pyarrow>=0.15.0'] + \
-                     pyspark_require_list
+                        'pyspark>=3.0.0;python_version>="3.8"']
+# Pin h5py: https://github.com/h5py/h5py/issues/1732
+spark_require_list = ['h5py<3', 'numpy', 'petastorm>=0.9.8', 'pyarrow>=0.15.0']
+ray_require_list = ['ray']
+
 # all frameworks' dependencies
 all_frameworks_require_list = tensorflow_require_list + \
                               tensorflow_gpu_require_list + \
                               keras_require_list + \
                               pytorch_require_list + \
                               mxnet_require_list + \
-                              spark_require_list
+                              spark_require_list + \
+                              pyspark_require_list
+
+# python packages required / recommended to develop horovod
+# these are the earliest versions to work with Python 3.8
+# keep in sync with Dockerfile.test.cpu
+# NOTE: do not use versions with +cpu or +gpu here as users would need to add --find-links to pip
+dev_require_list = ['tensorflow-cpu==2.2.0',
+                    'keras==2.3.1',
+                    'torch==1.4.0',
+                    'torchvision==0.5.0',
+                    'mxnet==1.5.0',
+                    'pyspark==3.0.1'] + spark_require_list
+# torchvision 0.5.0 depends on torch==1.4.0
+
+# python packages required only to run tests
+# Pin h5py: https://github.com/h5py/h5py/issues/1732
+test_require_list = ['mock', 'pytest', 'pytest-forked', 'parameterized', 'h5py<3']
 
 # Skip cffi if pytorch extension explicitly disabled
 if not os.environ.get('HOROVOD_WITHOUT_PYTORCH'):
@@ -1585,6 +1521,7 @@ setup(name='horovod',
       packages=find_packages(),
       description='Distributed training framework for TensorFlow, Keras, PyTorch, and Apache MXNet.',
       author='The Horovod Authors',
+      license='Apache 2.0',
       long_description=textwrap.dedent('''\
           Horovod is a distributed training framework for TensorFlow, Keras, PyTorch, and Apache MXNet.
           The goal of Horovod is to make distributed Deep Learning fast and easy to use.'''),
@@ -1614,7 +1551,10 @@ setup(name='horovod',
           'keras': keras_require_list,
           'pytorch': pytorch_require_list,
           'mxnet': mxnet_require_list,
-          'spark': spark_require_list
+          'spark': spark_require_list + pyspark_require_list,
+          'ray': ray_require_list,
+          'dev': dev_require_list,
+          'test': test_require_list,
       },
       python_requires='>=3.6',
       zip_safe=False,

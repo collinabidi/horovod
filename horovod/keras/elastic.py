@@ -16,7 +16,7 @@
 import keras
 
 from horovod._keras import elastic as _impl
-from horovod.tensorflow.elastic import TensorFlowKerasState
+from horovod.tensorflow.elastic import TensorFlowKerasState, run
 
 
 class KerasState(TensorFlowKerasState):
@@ -81,3 +81,12 @@ class UpdateEpochStateCallback(_impl.UpdateEpochStateCallbackImpl, keras.callbac
             state: `horovod.common.elastic.State` object to be updated.
         """
         super(UpdateEpochStateCallback, self).__init__(keras.backend, state)
+
+
+__all__ = [
+    'KerasState',
+    'CommitStateCallback',
+    'UpdateBatchStateCallback',
+    'UpdateEpochStateCallback',
+    'run',
+]
