@@ -214,6 +214,8 @@ OperationManager* CreateOperationManager(HorovodGlobalState& state) {
     broadcast_ops.push_back(
         std::shared_ptr<BroadcastOp>(new SHMEMBroadcast(&shmem_context, &state)));
   }
+#endif
+
 #if HAVE_NCCL && HOROVOD_GPU_ALLTOALL == 'N'
   alltoall_ops.push_back(std::shared_ptr<AlltoallOp>(
       new NCCLAlltoall(&nccl_context, &gpu_context, &state)));
