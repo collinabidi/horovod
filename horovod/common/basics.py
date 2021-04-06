@@ -241,6 +241,17 @@ class HorovodBasics(object):
         """
         return bool(self.MPI_LIB_CTYPES.horovod_ccl_built())
 
+    def shmem_enabled(self):
+        """Returns True if SHMEM is mode is currently enabled at runtime.
+
+        If SHMEM is enabled, users can use it for data transfer operations.
+
+        Returns:
+          A boolean value indicating whether SHMEM is enabled.
+        """
+        gloo_enabled = self.MPI_LIB_CTYPES.horovod_shmem_enabled()
+        return bool(shmem_enabled)
+
     def shmem_built(self):
         """Returns True if Horovod was compiled with SHMEM support.
 
