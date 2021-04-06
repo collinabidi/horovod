@@ -126,7 +126,7 @@ else()
 endif()
 message(STATUS "Using command ${PY_EXE}")
 
-# MPI
+# MPI and SHMEM
 if (NOT "$ENV{HOROVOD_WITHOUT_MPI}" STREQUAL "1")
     set(MPI_REQUIRED "")
     if ("$ENV{HOROVOD_WITH_MPI}" STREQUAL "1")
@@ -136,11 +136,22 @@ if (NOT "$ENV{HOROVOD_WITHOUT_MPI}" STREQUAL "1")
     if(MPI_FOUND)
         include_directories(SYSTEM ${MPI_INCLUDE_PATH})
         list(APPEND LINKER_LIBS ${MPI_LIBRARIES})
-        list(APPEND SOURCES "${PROJECT_SOURCE_DIR}/horovod/common/mpi/mpi_context.cc"
+
+        # Link SHMEM if specified for CPU operations
+        if ("$ENV{HOROVOD_WITH_SHMEM}" STREQUAL "1")
+            set(SHMEM_REQUIRED "REQUIRED")
+            list(APPEND SOURCES "${PROJECT_SOURCE_DIR}/horovod/common/shmem/shmem_context.cc"
                 "${PROJECT_SOURCE_DIR}/horovod/common/mpi/mpi_controller.cc"
-                "${PROJECT_SOURCE_DIR}/horovod/common/ops/mpi_operations.cc"
-                "${PROJECT_SOURCE_DIR}/horovod/common/ops/adasum/adasum_mpi.cc"
-                "${PROJECT_SOURCE_DIR}/horovod/common/ops/adasum_mpi_operations.cc")
+                "${PROJECT_SOURCE_DIR}/horovod/common/ops/shmem_operations.cc")
+            add_definitions(-DHAVE_SHMEM=1)
+            set(HAVE_SHMEM TRUE)
+        else()
+            list(APPEND SOURCES "${PROJECT_SOURCE_DIR}/horovod/common/mpi/mpi_context.cc"
+                    "${PROJECT_SOURCE_DIR}/horovod/common/mpi/mpi_controller.cc"
+                    "${PROJECT_SOURCE_DIR}/horovod/common/ops/mpi_operations.cc"
+                    "${PROJECT_SOURCE_DIR}/horovod/common/ops/adasum/adasum_mpi.cc"
+                    "${PROJECT_SOURCE_DIR}/horovod/common/ops/adasum_mpi_operations.cc")
+        endif()
         add_definitions(-DHAVE_MPI=1)
         set(HAVE_MPI TRUE)
     endif()
