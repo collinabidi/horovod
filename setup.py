@@ -38,8 +38,10 @@ torch_mpi_lib_v2 = CMakeExtension('horovod.torch.mpi_lib_v2',
                                      cmake_lists_dir='.', sources=[])
 mxnet_mpi_lib = CMakeExtension('horovod.mxnet.mpi_lib',
                                      cmake_lists_dir='.', sources=[])
-shmem_lib = CMakeExtension('horovod.shmem_lib', cmake_lists_dir='third_party/shmem',
-                          sources=[])
+tensorflow_shmem_lib = CMakeExtension('horovod.tensorflow.shmem_lib', 
+                                     cmake_lists_dir='.',sources=[])
+torch_shmem_lib = CMakeExtension('horovod.torch.shmem_lib', 
+                                     cmake_lists_dir='.',sources=[])
 def is_build_action():
     if len(sys.argv) <= 1:
         return False
@@ -166,7 +168,7 @@ setup(name='horovod',
           'Intended Audience :: Developers',
           'Topic :: Scientific/Engineering :: Artificial Intelligence',
       ],
-      ext_modules=[tensorflow_mpi_lib, torch_mpi_lib_v2, mxnet_mpi_lib, shmem_lib],
+      ext_modules=[tensorflow_mpi_lib, torch_mpi_lib_v2, mxnet_mpi_lib, tensorflow_shmem_lib, torch_shmem_lib],
       cmdclass={'build_ext': custom_build_ext},
       # cffi is required for PyTorch
       # If cffi is specified in setup_requires, it will need libffi to be installed on the machine,
