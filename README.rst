@@ -74,10 +74,6 @@ about who's involved and how Horovod plays a role, read the Linux Foundation `an
 
 |
 
-.. contents::
-
-|
-
 Documentation
 -------------
 
