@@ -44,6 +44,7 @@ def _load_library(name):
 
 # Check possible symbol not found error from tensorflow version mismatch
 try:
+    print("get_ext_suffix() = {}".format(str(get_ext_suffix())))
     MPI_LIB = _load_library('mpi_lib' + get_ext_suffix())
 except Exception as e:
     check_installed_version('tensorflow', tf.__version__, e)
@@ -73,6 +74,8 @@ ddl_built = _basics.ddl_built
 ccl_built = _basics.ccl_built
 cuda_built = _basics.cuda_built
 rocm_built = _basics.rocm_built
+shmem_built = _basics.shmem_built
+shmem_enabled = _basics.shmem_enabled
 
 # import reduction op values
 Average = _basics.Average
