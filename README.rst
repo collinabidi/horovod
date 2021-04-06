@@ -61,7 +61,7 @@ Horovod
 Horovod is a distributed deep learning training framework for TensorFlow, Keras, PyTorch, and Apache MXNet.
 The goal of Horovod is to make distributed deep learning fast and easy to use.
 
-This version of Horovod has SHMEM enabled.
+This version of Horovod has SHMEM enabled and was built by Collin Abidi at NSF SHREC, University of Pittsburgh.
 
 Dependencies
 -------
@@ -89,7 +89,9 @@ Documentation
 
 **OpenMPI**: ``4.0.3``
 
-**OpenSHMEM**: ``1.4`` (included with **OpenMPI** >= ``4.x.x``)
+**UCX**
+
+**OpenSHMEM**: ``1.4`` (included with **OpenMPI** >= ``4.0``)
 
 **gcc**: ``8.0.3``
 
@@ -123,20 +125,21 @@ Install
 .. raw:: html
 
     <p/>
+3. Install OpenMPI and UCX with OpenMPI following the instructions at https://github.com/openucx/ucx/wiki/OpenMPI-and-OpenSHMEM-installation-with-UCX.
 
-3. Install SHMEM-based **Horovod** from source.
+4. Install SHMEM-based **Horovod** from source.
 
    Download repository from GitHub.
 
    .. code-block:: bash
 
-      $ git clone https://github.com/collinabidi/horovod
+      $ git clone --recursive https://github.com/collinabidi/horovod
       
 Build
 -------
 
 1. Enable **PyTorch** and/or **TensorFlow**.
-   Modify the ``build_mpi.sh`` and ``build_shmem.sh`` scripts to include the proper flags. If you want to build with PyTorch, make sure that ``HOROVOD_WITH_PYTORCH=1`` is in each of the lines in ``build_mpi.sh`` and ``build_shmem.sh``. If you want to build with TensorFlow, make sure that ``HOROVOD_WITH_TENSORFLOW=1`` is in each of the lines in ``build_mpi.sh`` and ``build_shmem.sh``. If you want to build **without** one, add the ``HOROVOD_WITHOUT_TENSORFLOW=1`` or ``HOROVOD_WITHOUT_PYTORCH=1`` flags.
+   Modify the ``build_mpi.sh`` and ``build_shmem.sh`` scripts to include the proper flags. If you want to build with PyTorch, make sure that ``HOROVOD_WITH_PYTORCH=1`` is in each of the lines of ``build_mpi.sh`` and ``build_shmem.sh``. If you want to build with TensorFlow, make sure that ``HOROVOD_WITH_TENSORFLOW=1`` is in each of the lines in ``build_mpi.sh`` and ``build_shmem.sh``. If you want to build **without** one, add the ``HOROVOD_WITHOUT_TENSORFLOW=1`` or ``HOROVOD_WITHOUT_PYTORCH=1`` flags.
       $ HOROVOD_GPU_OPERATIONS=NCCL pip install horovod
 
 For more details on installing Horovod with GPU support, read `Horovod on GPU <docs/gpus.rst>`_.
