@@ -66,10 +66,6 @@ This version of Horovod has SHMEM enabled and was built by Collin Abidi at NSF S
 Dependencies
 -------
 These are versions of packages/libraries that are necessary/known to work when using Shmorovod. Python packages are installed using ``pip``.
-.. raw:: html
-
-   <p><img src="https://raw.githubusercontent.com/lfai/artwork/master/lfaidata-assets/lfaidata-project-badge/graduate/color/lfaidata-project-badge-graduate-color.png" alt="LF AI & Data" width="200"/></p>
-
 
 Horovod is hosted by the `LF AI & Data Foundation <https://lfdl.io>`_ (LF AI & Data). If you are a company that is deeply
 committed to using open source technologies in artificial intelligence, machine, and deep learning, and want to support
