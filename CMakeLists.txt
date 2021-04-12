@@ -126,7 +126,7 @@ else()
 endif()
 message(STATUS "Using command ${PY_EXE}")
 
-# MPI and SHMEM
+# MPI
 if (NOT "$ENV{HOROVOD_WITHOUT_MPI}" STREQUAL "1")
     set(MPI_REQUIRED "")
     if ("$ENV{HOROVOD_WITH_MPI}" STREQUAL "1")
@@ -136,22 +136,11 @@ if (NOT "$ENV{HOROVOD_WITHOUT_MPI}" STREQUAL "1")
     if(MPI_FOUND)
         include_directories(SYSTEM ${MPI_INCLUDE_PATH})
         list(APPEND LINKER_LIBS ${MPI_LIBRARIES})
-
-        # Link SHMEM if specified for CPU operations
-        if ("$ENV{HOROVOD_WITH_SHMEM}" STREQUAL "1")
-            set(SHMEM_REQUIRED "REQUIRED")
-            list(APPEND SOURCES "${PROJECT_SOURCE_DIR}/horovod/common/shmem/shmem_context.cc"
+        list(APPEND SOURCES "${PROJECT_SOURCE_DIR}/horovod/common/mpi/mpi_context.cc"
                 "${PROJECT_SOURCE_DIR}/horovod/common/mpi/mpi_controller.cc"
-                "${PROJECT_SOURCE_DIR}/horovod/common/ops/shmem_operations.cc")
-            add_definitions(-DHAVE_SHMEM=1)
-            set(HAVE_SHMEM TRUE)
-        else()
-            list(APPEND SOURCES "${PROJECT_SOURCE_DIR}/horovod/common/mpi/mpi_context.cc"
-                    "${PROJECT_SOURCE_DIR}/horovod/common/mpi/mpi_controller.cc"
-                    "${PROJECT_SOURCE_DIR}/horovod/common/ops/mpi_operations.cc"
-                    "${PROJECT_SOURCE_DIR}/horovod/common/ops/adasum/adasum_mpi.cc"
-                    "${PROJECT_SOURCE_DIR}/horovod/common/ops/adasum_mpi_operations.cc")
-        endif()
+                "${PROJECT_SOURCE_DIR}/horovod/common/ops/mpi_operations.cc"
+                "${PROJECT_SOURCE_DIR}/horovod/common/ops/adasum/adasum_mpi.cc"
+                "${PROJECT_SOURCE_DIR}/horovod/common/ops/adasum_mpi_operations.cc")
         add_definitions(-DHAVE_MPI=1)
         set(HAVE_MPI TRUE)
     endif()
@@ -268,6 +257,19 @@ if (NOT "$ENV{HOROVOD_WITHOUT_GLOO}" STREQUAL "1")
     set(HAVE_GLOO TRUE)
 endif()
 
+# SHMEM
+if (NOT "$ENV{HOROVOD_WITHOUT_SHMEM}" STREQUAL "1")
+    if(HAVE_MPI)
+        set(USE_MPI TRUE)
+    else()
+        set(USE_MPI FALSE)
+    endif()
+    list(APPEND SOURCES "${PROJECT_SOURCE_DIR}/horovod/common/shmem/shmem_context.cc"
+                        "${PROJECT_SOURCE_DIR}/horovod/common/ops/shmem_operations.cc")
+    add_definitions(-DHAVE_SHMEM=1)
+    set(HAVE_SHMEM TRUE)
+endif()
+
 # NCCL + MPI
 if (HAVE_NCCL AND HAVE_MPI)
     list(APPEND SOURCES "${PROJECT_SOURCE_DIR}/horovod/common/ops/adasum_gpu_operations.cc")
@@ -293,6 +295,11 @@ if(DEFINED HOROVOD_CPU_OPERATIONS)
             message(FATAL_ERROR "Cannot set both HOROVOD_WITHOUT_GLOO and HOROVOD_CPU_OPERATIONS=GLOO.")
         endif()
         add_definitions(-DHOROVOD_CPU_OPERATIONS_DEFAULT=G)
+    elseif(HOROVOD_CPU_OPERATIONS STREQUAL "SHMEM")
+        if(NOT HAVE_SHMEM)
+            message(FATAL_ERROR "Cannot set both HOROVOD_WITHOUT_SHMEM and HOROVOD_CPU_OPERATIONS=SHMEM.")
+        endif()
+        add_definitions(-DHOROVOD_CPU_OPERATIONS_DEFAULT=S)
     endif()
 endif()
 
