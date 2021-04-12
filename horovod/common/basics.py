@@ -249,7 +249,7 @@ class HorovodBasics(object):
         Returns:
           A boolean value indicating whether SHMEM is enabled.
         """
-        gloo_enabled = self.MPI_LIB_CTYPES.horovod_shmem_enabled()
+        shmem_enabled = self.MPI_LIB_CTYPES.horovod_shmem_enabled()
         return bool(shmem_enabled)
 
     def shmem_built(self):
