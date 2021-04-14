@@ -259,7 +259,8 @@ endif()
 
 # SHMEM
 if (NOT "$ENV{HOROVOD_WITHOUT_SHMEM}" STREQUAL "1")
-    set(USE_MPI FALSE)
+    set(USE_MPI TRUE)
+    set(USE_SHMEM TRUE)
     list(APPEND SOURCES "${PROJECT_SOURCE_DIR}/horovod/common/shmem/shmem_context.cc"
                         "${PROJECT_SOURCE_DIR}/horovod/common/ops/shmem_operations.cc")
     add_definitions(-DHAVE_SHMEM=1)
