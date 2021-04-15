@@ -89,7 +89,6 @@ SHMEMAllreduce::SHMEMAllreduce(SHMEMContext* shmem_context, HorovodGlobalState* 
     : AllreduceOp(global_state), shmem_context_(shmem_context) {}
 
 Status SHMEMAllreduce::Execute(std::vector<TensorTableEntry>& entries, const Response& response) {
-  //std::cout << "SHMEM Allreduce" << std::endl;
   auto& first_entry = entries[0];
 
   // SHMEM variable initialization
@@ -190,8 +189,6 @@ bool SHMEMAllgather::Enabled(const ParameterManager& param_manager,
 
 Status SHMEMAllgather::Execute(std::vector<TensorTableEntry>& entries, const Response& response) {
   auto& timeline = global_state_->timeline;
-
-  //std::cout << "SHMEM Allgather" << std::endl;
 
   // Sizes of subcomponents of each entry from all ranks
   auto** entry_component_sizes = new int64_t* [entries.size()];
@@ -332,7 +329,6 @@ Status SHMEMAllgather::Execute(std::vector<TensorTableEntry>& entries, const Res
   shmem_barrier_all();
 
   // Return OK
-  //std::cout << "DONE SHMEM Allgather" << std::endl;
   return Status::OK();
 }
 
@@ -370,23 +366,15 @@ Status SHMEMBroadcast::Execute(std::vector<TensorTableEntry>& entries, const Res
   auto dtype = shmem_context_->GetSHMEMDataType(e.tensor->dtype());
   if (dtype ==  SHMEM_INT32_T) {
     data_ptr = (void*) shmem_malloc(sizeof(int32_t) * e.tensor->shape().num_elements());
-    fprintf(stderr, "[DEBUG][%d] num elements -> %ld\n", __LINE__,  e.tensor->shape().num_elements());
-    fprintf(stderr, "[DEBUG][%d] data in buffer -> %d\n", __LINE__, *(int*)(data_ptr));
   }
   else if (dtype == SHMEM_INT64_T) {
     data_ptr = (void*) shmem_malloc(sizeof(int64_t) * e.tensor->shape().num_elements());
-    fprintf(stderr, "[DEBUG][%d] num elements -> %ld\n", __LINE__,  e.tensor->shape().num_elements());
-    fprintf(stderr, "[DEBUG][%d] data in buffer -> %ld\n", __LINE__, *(int64_t*)(data_ptr));
   }
   else if (dtype == SHMEM_FLOAT) {
     data_ptr = (void*) shmem_malloc(sizeof(float_t) * e.tensor->shape().num_elements());
-    fprintf(stderr, "[DEBUG][%d] num elements -> %ld\n", __LINE__,  e.tensor->shape().num_elements());
-    fprintf(stderr, "[DEBUG][%d] data in buffer -> %f\n", __LINE__, *(float*)(data_ptr));
   }
   else if (dtype == SHMEM_DOUBLE) {
     data_ptr = (void*) shmem_malloc(sizeof(double_t) * e.tensor->shape().num_elements());
-    fprintf(stderr, "[DEBUG][%d] num elements -> %ld\n", __LINE__,  e.tensor->shape().num_elements());
-    fprintf(stderr, "[DEBUG][%d] data in buffer -> %lf\n", __LINE__, *(double*)(data_ptr));
   }
   else {
     throw std::logic_error("BROADCAST: REEE Not done with typecasting yet");
