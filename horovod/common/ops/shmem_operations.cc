@@ -33,31 +33,22 @@ SHMEM_DataType SHMEMContext::GetSHMEMDataType(const DataType dtype) {
   // 64-bit arrays is on the to-do list.
   switch (dtype) {
   case HOROVOD_INT8:
-    fprintf(stderr, "[DEBUG][%d] HOROVOD_DATATYPE -> HOROVOD_INT8\n", __LINE__);
     return SHMEM_INT8_T;
   case HOROVOD_INT16:
-    fprintf(stderr, "[DEBUG][%d] HOROVOD_DATATYPE -> HOROVOD_INT16\n", __LINE__);
     return SHMEM_INT16_T;
   case HOROVOD_INT32:
-    fprintf(stderr, "[DEBUG][%d] HOROVOD_DATATYPE -> HOROVOD_INT32\n", __LINE__);
     return SHMEM_INT32_T;
   case HOROVOD_INT64:
-    fprintf(stderr, "[DEBUG][%d] HOROVOD_DATATYPE -> HOROVOD_INT64\n", __LINE__);
     return SHMEM_INT64_T;
   case HOROVOD_UINT8:
-    fprintf(stderr, "[DEBUG][%d] HOROVOD_DATATYPE -> HOROVOD_UINT8\n", __LINE__);
     return SHMEM_UINT8_T;
   case HOROVOD_UINT16:
-    fprintf(stderr, "[DEBUG][%d] HOROVOD_DATATYPE -> HOROVOD_UINT16\n", __LINE__);
     return SHMEM_UINT16_T;
   case HOROVOD_FLOAT32:
-    fprintf(stderr, "[DEBUG][%d] HOROVOD_DATATYPE -> HOROVOD_FLOAT32\n", __LINE__);
     return SHMEM_FLOAT;
   case HOROVOD_FLOAT64:
-    fprintf(stderr, "[DEBUG][%d] HOROVOD_DATATYPE -> HOROVOD_FLOAT64\n", __LINE__);
     return SHMEM_DOUBLE;
   case HOROVOD_BOOL:
-    fprintf(stderr, "[DEBUG][%d] HOROVOD_DATATYPE -> HOROVOD_BOOL\n", __LINE__);
     return SHMEM_C_BOOL;
   default:
     throw std::logic_error("Type " + DataType_Name(dtype) +
