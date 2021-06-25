@@ -59,6 +59,9 @@ Status OperationManager::ExecuteAllgather(std::vector<TensorTableEntry>& entries
 
 Status OperationManager::ExecuteBroadcast(std::vector<TensorTableEntry>& entries,
                                           const Response& response) const {
+  auto now = std::chrono::system_clock::now();
+  std::string formatted_time = std::format("{0:%F_%T}", now);
+  std::cout << formatted_time << std::endl;
   for (auto& op : broadcast_ops_) {
     if (op->Enabled(*param_manager_, entries, response)) {
       return op->Execute(entries, response);
